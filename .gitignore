@@ -422,6 +422,7 @@ FodyWeavers.xsd
 node_modules/
 dist/
 coverage/
+docker/.e2e*
 .env
 .env.*
 !.env.example
