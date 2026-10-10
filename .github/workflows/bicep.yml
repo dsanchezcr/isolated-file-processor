@@ -1,10 +1,10 @@
 name: Bicep validation
 on:
   pull_request:
-    paths: [deploy/bicep/**, .github/workflows/bicep.yml, .github/workflows/release.yml]
+    paths: [deploy/bicep/**, .github/workflows/bicep.yml, .github/workflows/05-deploy-azure.yml]
   push:
     branches: [main]
-    paths: [deploy/bicep/**, .github/workflows/bicep.yml, .github/workflows/release.yml]
+    paths: [deploy/bicep/**, .github/workflows/bicep.yml, .github/workflows/05-deploy-azure.yml]
 
 permissions:
   contents: read

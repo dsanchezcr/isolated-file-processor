@@ -25,8 +25,6 @@ jobs:
       MINIO_ENDPOINT: 127.0.0.1
       MINIO_PORT: "9000"
       MINIO_USE_SSL: "false"
-      QUARANTINE_BUCKET: quarantine
-      CLEAN_BUCKET: clean
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
@@ -50,9 +48,9 @@ jobs:
           docker buildx bake -f docker/docker-bake.hcl --print >/dev/null
       - name: Build real sandbox and distroless host images
         run: |
-          docker build --target sandbox-runner -f docker/Dockerfile -t sandbox-runner:local .
-          docker build --target gateway -f docker/Dockerfile -t support-shield/gateway:local .
-          docker build --target worker -f docker/Dockerfile -t support-shield/worker:local .
+          docker build --target sandbox-runner -f docker/Dockerfile.sandbox-runner -t sandbox-runner:local .
+          docker build --target gateway -f docker/Dockerfile.gateway -t support-shield/gateway:local .
+          docker build --target worker -f docker/Dockerfile.worker -t support-shield/worker:local .
           docker run --rm --entrypoint /usr/local/bin/docker support-shield/worker:local --version
           for image in gateway worker; do
             docker run --rm --entrypoint /nodejs/bin/node "support-shield/$image:local" \
@@ -84,10 +82,10 @@ jobs:
               until mc alias set ci http://127.0.0.1:9000 "$MINIO_ACCESS_KEY" "$MINIO_SECRET_KEY"; do
                 attempts=$((attempts + 1)); test "$attempts" -lt 60; sleep 2
               done
-              mc mb --ignore-existing ci/quarantine
-              mc mb --ignore-existing ci/clean
-              mc anonymous set none ci/quarantine
-              mc anonymous set none ci/clean
+              mc mb --ignore-existing ci/quarantine-files
+              mc mb --ignore-existing ci/clean-files
+              mc anonymous set none ci/quarantine-files
+              mc anonymous set none ci/clean-files
             '
           for attempt in $(seq 1 30); do
             if docker exec ci-redis redis-cli ping | grep -q PONG; then break; fi

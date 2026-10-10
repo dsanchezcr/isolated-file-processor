@@ -8,15 +8,41 @@ param apiKey string
 param workerDeploymentEnabled bool
 param gatewayIdentityId string
 param gatewayClientId string
+param gatewayPrincipalId string
 param workerIdentityId string
 param workerClientId string
+param workerPrincipalId string
 param storageAccountName string
 param redisName string
 param redisHost string
 param appInsightsName string
+param otlpEndpoint string
+param acrName string
 
 resource redis 'Microsoft.Cache/redis@2024-11-01' existing = { name: redisName }
 resource insights 'Microsoft.Insights/components@2020-02-02' existing = { name: appInsightsName }
+resource registry 'Microsoft.ContainerRegistry/registries@2023-07-01' existing = if (!empty(acrName)) {
+  name: acrName
+}
+var acrPullRoleId = subscriptionResourceId('Microsoft.Authorization/roleDefinitions', '7f951dda-4ed3-4680-a7ca-43fe172d538d')
+resource gatewayRegistryPull 'Microsoft.Authorization/roleAssignments@2022-04-01' = if (!empty(acrName)) {
+  name: guid(registry!.id, gatewayPrincipalId, acrPullRoleId)
+  scope: registry
+  properties: {
+    principalId: gatewayPrincipalId
+    principalType: 'ServicePrincipal'
+    roleDefinitionId: acrPullRoleId
+  }
+}
+resource workerRegistryPull 'Microsoft.Authorization/roleAssignments@2022-04-01' = if (!empty(acrName)) {
+  name: guid(registry!.id, workerPrincipalId, acrPullRoleId)
+  scope: registry
+  properties: {
+    principalId: workerPrincipalId
+    principalType: 'ServicePrincipal'
+    roleDefinitionId: acrPullRoleId
+  }
+}
 
 var sharedEnvironment = [
   { name: 'NODE_ENV', value: 'production' }
@@ -24,6 +50,7 @@ var sharedEnvironment = [
   { name: 'AZURE_STORAGE_ACCOUNT', value: storageAccountName }
   { name: 'REDIS_URL', secretRef: 'redis-url' }
   { name: 'APPLICATIONINSIGHTS_CONNECTION_STRING', secretRef: 'app-insights' }
+  { name: 'OTEL_EXPORTER_OTLP_ENDPOINT', value: otlpEndpoint }
 ]
 var secrets = [
   { name: 'redis-password', value: redis.listKeys().primaryKey }
@@ -41,6 +68,9 @@ resource gateway 'Microsoft.App/containerApps@2024-03-01' = {
     configuration: {
       activeRevisionsMode: 'Single'
       secrets: concat(secrets, [ { name: 'api-key', value: apiKey } ])
+      registries: empty(acrName) ? [] : [
+        { server: registry!.properties.loginServer, identity: gatewayIdentityId }
+      ]
       ingress: {
         external: true
         targetPort: 3000
@@ -64,13 +94,14 @@ resource gateway 'Microsoft.App/containerApps@2024-03-01' = {
       ]
       scale: {
         minReplicas: 1
-        maxReplicas: 3
+        maxReplicas: 10
         rules: [
           { name: 'http', http: { metadata: { concurrentRequests: '20' } } }
         ]
       }
     }
   }
+  dependsOn: [ gatewayRegistryPull ]
 }
 
 // A scaling design blueprint, NOT a working Docker worker deployment.
@@ -81,7 +112,13 @@ resource worker 'Microsoft.App/containerApps@2024-03-01' = if (workerDeploymentE
   properties: {
     managedEnvironmentId: environmentId
     workloadProfileName: 'Consumption'
-    configuration: { activeRevisionsMode: 'Single', secrets: secrets }
+    configuration: {
+      activeRevisionsMode: 'Single'
+      secrets: secrets
+      registries: empty(acrName) ? [] : [
+        { server: registry!.properties.loginServer, identity: workerIdentityId }
+      ]
+    }
     template: {
       containers: [
         {
@@ -96,7 +133,7 @@ resource worker 'Microsoft.App/containerApps@2024-03-01' = if (workerDeploymentE
       ]
       scale: {
         minReplicas: 0
-        maxReplicas: 5
+        maxReplicas: 10
         rules: [
           {
             name: 'bullmq-waiting'
@@ -115,6 +152,7 @@ resource worker 'Microsoft.App/containerApps@2024-03-01' = if (workerDeploymentE
       }
     }
   }
+  dependsOn: [ workerRegistryPull ]
 }
 
 output gatewayUrl string = 'https://${gateway.properties.configuration.ingress.fqdn}'

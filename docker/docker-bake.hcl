@@ -14,13 +14,13 @@ group "default" {
 
 target "_common" {
   context = "."
-  dockerfile = "docker/Dockerfile"
   platforms = ["linux/amd64", "linux/arm64"]
   attest = ["type=sbom", "type=provenance,mode=max"]
 }
 
 target "gateway" {
   inherits = ["_common"]
+  dockerfile = "docker/Dockerfile.gateway"
   target = "gateway"
   tags = concat(
     ["${REGISTRY}/gateway:${TAG}"],
@@ -30,6 +30,7 @@ target "gateway" {
 
 target "worker" {
   inherits = ["_common"]
+  dockerfile = "docker/Dockerfile.worker"
   target = "worker"
   tags = concat(
     ["${REGISTRY}/worker:${TAG}"],
@@ -39,6 +40,7 @@ target "worker" {
 
 target "sandbox-runner" {
   inherits = ["_common"]
+  dockerfile = "docker/Dockerfile.sandbox-runner"
   target = "sandbox-runner"
   tags = concat(
     ["${REGISTRY}/sandbox-runner:${TAG}"],

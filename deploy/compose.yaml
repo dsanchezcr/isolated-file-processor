@@ -9,8 +9,6 @@ x-app-environment: &app-environment
   MINIO_USE_SSL: "false"
   MINIO_ACCESS_KEY: ${MINIO_ACCESS_KEY:?Set MINIO_ACCESS_KEY}
   MINIO_SECRET_KEY: ${MINIO_SECRET_KEY:?Set MINIO_SECRET_KEY}
-  QUARANTINE_BUCKET: quarantine
-  CLEAN_BUCKET: clean
 
 x-app-security: &app-security
   user: "65532:65532"
@@ -31,7 +29,7 @@ services:
     image: ${GATEWAY_IMAGE:-support-shield/gateway:local}
     build:
       context: ..
-      dockerfile: docker/Dockerfile
+      dockerfile: docker/Dockerfile.gateway
       target: gateway
     environment:
       <<: *app-environment
@@ -50,7 +48,7 @@ services:
     image: ${WORKER_IMAGE:-support-shield/worker:local}
     build:
       context: ..
-      dockerfile: docker/Dockerfile
+      dockerfile: docker/Dockerfile.worker
       target: worker
     profiles: [execution-host]
     environment:
@@ -78,8 +76,8 @@ services:
     # No published Redis or object-storage ports.
 
   minio:
-    # Build/review RELEASE.2025-10-15T17-29-55Z or newer, then supply its digest.
-    # Older published MinIO images contain GHSA-jjjj-jwhf-8rgr.
+    # Supply an independently reviewed, patched MinIO distribution by digest.
+    # Upstream releases have unpatched advisories: no unsafe default or fallback.
     image: ${MINIO_IMAGE:?Set a patched MinIO image by digest}
     command: [server, /data, --console-address, ":9001"]
     environment:
@@ -105,10 +103,10 @@ services:
           test "$$attempts" -lt 60
           sleep 2
         done
-        mc mb --ignore-existing shield/quarantine
-        mc mb --ignore-existing shield/clean
-        mc anonymous set none shield/quarantine
-        mc anonymous set none shield/clean
+        mc mb --ignore-existing shield/quarantine-files
+        mc mb --ignore-existing shield/clean-files
+        mc anonymous set none shield/quarantine-files
+        mc anonymous set none shield/clean-files
     restart: "no"
 
 networks:

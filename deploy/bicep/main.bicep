@@ -5,7 +5,7 @@ targetScope = 'resourceGroup'
 @maxLength(18)
 param prefix string = 'support-shield'
 param location string = resourceGroup().location
-@description('Publicly pullable gateway image, preferably pinned by digest.')
+@description('Gateway image pinned by digest; public registry unless acrName selects managed-identity ACR pull.')
 param gatewayImage string
 @description('Worker image for the disabled ACA blueprint; not a supported Docker execution backend.')
 param workerImage string
@@ -14,6 +14,10 @@ param workerImage string
 param apiKey string
 @description('EXPERIMENTAL blueprint only. The worker fails closed with SANDBOX_BACKEND=disabled. ACA cannot execute the Docker adapter.')
 param workerDeploymentEnabled bool = false
+@description('Optional reviewed OTLP collector endpoint. Empty disables application trace export; Application Insights is not an OTLP collector.')
+param otlpEndpoint string = ''
+@description('Optional existing same-resource-group Azure Container Registry name. Uses managed identity AcrPull, not registry passwords.')
+param acrName string = ''
 
 module network './modules/network.bicep' = {
   name: 'network'
@@ -68,12 +72,16 @@ module apps './modules/containerApps.bicep' = {
     workerDeploymentEnabled: workerDeploymentEnabled
     gatewayIdentityId: identities.outputs.gatewayIdentityId
     gatewayClientId: identities.outputs.gatewayClientId
+    gatewayPrincipalId: identities.outputs.gatewayPrincipalId
     workerIdentityId: identities.outputs.workerIdentityId
     workerClientId: identities.outputs.workerClientId
+    workerPrincipalId: identities.outputs.workerPrincipalId
     storageAccountName: storage.outputs.storageAccountName
     redisName: redis.outputs.redisName
     redisHost: redis.outputs.redisHost
     appInsightsName: monitoring.outputs.appInsightsName
+    otlpEndpoint: otlpEndpoint
+    acrName: acrName
   }
 }
 

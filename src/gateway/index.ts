@@ -24,5 +24,7 @@ async function main(): Promise<void> {
 main().catch(async () => {
   console.error('Gateway startup failed; verify configuration and service dependencies');
   process.exitCode = 1;
-  await telemetry.shutdown();
+  await telemetry.shutdown().catch(() => {
+    console.error('Telemetry shutdown failed');
+  });
 });

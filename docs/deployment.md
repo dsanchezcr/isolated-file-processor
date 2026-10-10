@@ -57,6 +57,11 @@ older published images include known security advisories; build/review the
 patched `RELEASE.2025-10-15T17-29-55Z` source or newer and pin your approved image
 digest. Independently review and pin the `mc` initialization image; neither image
 is assumed available from a trusted project registry.
+Set repository variables `MINIO_IMAGE` and `MINIO_MC_IMAGE` to the same reviewed
+immutable references for integration CI. The patched MinIO release requires
+container users to build from source; do not substitute an older official
+September image when an October image cannot be pulled. Registry/network
+unavailability is a validation limitation, not grounds to bypass the advisory.
 
 The base Compose file intentionally does **not** enable processing or mount a
 Docker socket. The `execution-host` profile and explicit local override are an
@@ -100,7 +105,7 @@ export IMAGE_TAG="$(git rev-parse --short HEAD)"
 # Authenticate interactively or with --password-stdin, never a CLI password flag.
 docker login
 for target in gateway worker sandbox-runner; do
-  image="docker.io/$DOCKERHUB_NAMESPACE/support-shield-$target:$IMAGE_TAG"
+  image="docker.io/$DOCKERHUB_NAMESPACE/$target:$IMAGE_TAG"
   docker build --file "docker/Dockerfile.$target" --tag "$image" .
   docker push "$image"
 done
@@ -109,11 +114,55 @@ done
 For multi-platform artifacts with SBOM/provenance, use
 `docker buildx bake --file docker/docker-bake.hcl` with the repository's registry
 variables and a correctly configured builder. The manual loop above builds only
-the current host's platform. In GitHub's protected `release` environment, configure
-the `DOCKERHUB_NAMESPACE` and `SCOUT_ORGANIZATION` variables and a scoped
-`DOCKERHUB_TOKEN` secret before manually dispatching the release workflow on the
-protected `main` branch. Configure Scout SaaS policies separately; the local
-policy JSON is a description, not automatic organization-policy activation.
+the current host's platform. Bake defaults use `support-shield/gateway:local`,
+`support-shield/worker:local` and `support-shield/sandbox-runner:local`, plus the
+`sandbox-runner:local` alias expected by Compose when `TAG=local`. The direct
+sandbox build plus Compose commands above are also supported. Release automation
+sets its registry variables explicitly.
+
+For native local loading into a legacy Docker image store that cannot retain
+attestations, the tested development-only build is:
+
+```sh
+docker buildx bake --file docker/docker-bake.hcl \
+  --set '*.platform=linux/amd64' --provenance=false --sbom=false --load
+```
+
+Use your actual native platform instead of `linux/amd64` on another architecture.
+Disabling attestations is only a local-store workaround, not a release policy:
+production publishing must retain SBOM/provenance with a capable builder.
+Before manually dispatching `04-build-and-scan.yml` (which calls
+`05-deploy-azure.yml` after release checks)
+on protected `main`, configure GitHub's protected `release` and `production`
+environments:
+
+| Configuration | Purpose |
+| --- | --- |
+| `DOCKERHUB_NAMESPACE` variable | Actual Docker Hub organization/namespace |
+| `SCOUT_ORGANIZATION` variable | Actual Scout SaaS organization with configured policies |
+| `AZURE_RESOURCE_GROUP`, `AZURE_PREFIX` variables | Approved gateway deployment target |
+| `AZURE_CLIENT_ID`, `AZURE_TENANT_ID`, `AZURE_SUBSCRIPTION_ID` variables | Deployment identity using Azure OIDC federation |
+| `AZURE_ACR_NAME` variable (when configured) | Existing approved ACR selected for managed-identity image pulls |
+| `PUBLIC_IMAGES_CONFIRMED=true` variable (only without ACR) | Explicit acknowledgement that images are publicly pullable when `acrName` is empty |
+| `DOCKERHUB_TOKEN` secret | Scoped publishing/scanning credential |
+| `API_KEY` secret | Gateway service credential, at least 32 characters |
+
+Grant the Azure identity only deployment and required role-assignment permissions
+on the approved target, and restrict federation subjects to the protected
+environment/repository. Configure environment reviewers and allowed branches in
+GitHub settings; workflow declarations alone do not establish approval policy.
+Configure Scout SaaS policies separately; the local policy JSON is a description,
+not automatic organization-policy activation.
+
+The workflow publishes SHA-tagged images to
+`ghcr.io/OWNER/REPOSITORY/{gateway,worker,sandbox-runner}` and
+`docker.io/NAMESPACE/{gateway,worker,sandbox-runner}`; configure the protected ACR
+target for the required Azure registry publication and use its immutable digests
+for deployment. It deploys immutable digest
+references, forces `workerDeploymentEnabled=false`, and performs ARM validation,
+what-if, deployment and gateway revision/image checks when supplied with valid
+Azure access. These are workflow capabilities, not a claim that Azure checks have
+already passed in this checkout.
 
 The sandbox image is a separate artifact and must be present on the execution
 host. Pin and scan **all three** artifacts, not just the gateway. Image publishing
@@ -121,9 +170,28 @@ does not provision a secured worker host or configure GitHub/Azure permissions.
 The release workflow publishes before Scout evaluates the artifacts. A pushed
 tag alone is not approved for deployment: consume digests only after all release
 checks pass, and implement a reviewed promotion/quarantine policy for registries.
-For a private registry, supply managed-identity registry pull configuration in a
-reviewed extension; this template expects publicly pullable images and does not
-hide registry credentials in an image reference.
+Set `acrName` to enable managed-identity pull from an existing same-resource-group
+ACR. The template assigns **AcrPull**, scoped to that registry, to each distinct
+gateway/worker UAMI and configures each ACA app's registry entry with its own
+identity. It never enables ACR admin access or handles ACR passwords. Images must
+use the actual registry login server and immutable digest; `acrName` does not
+rewrite image references. When `acrName` is empty, no ACR roles/registry entries
+are deployed and publicly pullable images are required.
+
+ACR provisioning, approved repository/image promotion and publisher permissions
+are separate protected infrastructure/release responsibilities. The deployer
+needs role-assignment permission at the existing registry; the publisher needs
+reviewed push rights, never shared admin credentials. This reference uses classic
+registry RBAC with AcrPull; ABAC-enabled registries require a reviewed
+repository-reader role configuration instead. Restrict Azure OIDC subjects to
+the protected workflow/environment and grant only needed scopes.
+
+Ensure ACR networking/private DNS permits image pulls from ACA and the dedicated
+execution host. Private-endpoint-only ACR connectivity is not provisioned by this
+template. If ACR exists in another resource group, extend the explicit resource
+scope in a reviewed change rather than passing a misleading name. The public
+image confirmation gate is unnecessary only when a configured ACR supplies the
+managed-identity image pull path.
 
 ## Bicep modules
 
@@ -136,6 +204,13 @@ hide registry credentials in an image reference.
 | `redis` | Premium Azure Cache for Redis; TLS 1.2+, port 6380 only; private endpoint; no public access; no eviction |
 | `containerAppEnv` | VNet-integrated ACA workload-profile environment; Log Analytics |
 | `containerApps` | Authenticated gateway; opt-in nonfunctional worker/KEDA blueprint |
+
+Gateway scales from one to ten replicas; the unsupported worker blueprint scales
+from zero to ten. Gateway admission currently limits requests to 30/minute per
+client per replica and concurrent uploads to 16 per replica. These in-process
+limits are **not global quotas**: scaling adds admission capacity. Configure
+global edge rate limits, caller quotas, total backlog/queue-age budgets and
+execution-host capacity controls before production.
 
 The adapter uses containers `quarantine-files` and `clean-files`.
 Gateway identity: **Storage Blob Data Contributor on quarantine only**.
@@ -152,6 +227,15 @@ exactly 24 hours after arrival. Versioning and soft-delete are disabled here so
 the retention rule does not silently preserve previous versions. Clean retention
 is deliberately unspecified; set a business retention/deletion policy before
 production. A queued job that outlives quarantine retention must reject safely.
+
+Queue commit followed by acknowledgement loss can leave acceptance ambiguous.
+The gateway returns an error but retains quarantine after any enqueue attempt
+fails, since Redis may have accepted the job. Do not “repair” that ambiguity by
+deleting its active input. Retained orphans rely on lifecycle expiry; a client
+retry can create a distinct job because client idempotency is not implemented.
+Azure expiry is asynchronous, not an exact 24-hour SLA. Verify local MinIO's
+quarantine lifecycle configuration independently; Azure's policy does not apply
+to local object-store volumes.
 
 Redis uses an access key, delivered only via an ACA secret reference. Storage
 uses managed identity, not keys. Redis MI/token authentication is **not
@@ -182,8 +266,8 @@ az group create --name support-shield --location eastus
 az bicep build --file deploy/bicep/main.bicep --stdout > /dev/null
 
 export API_KEY="$(openssl rand -hex 32)"
-export GATEWAY_IMAGE='docker.io/your-organization/support-shield-gateway@sha256:YOUR_DIGEST'
-export WORKER_IMAGE='docker.io/your-organization/support-shield-worker@sha256:YOUR_DIGEST'
+export GATEWAY_IMAGE='docker.io/your-organization/gateway@sha256:YOUR_DIGEST'
+export WORKER_IMAGE='docker.io/your-organization/worker@sha256:YOUR_DIGEST'
 
 # Do not enable shell tracing. Secure parameters are not emitted as outputs.
 az deployment group what-if \
@@ -201,18 +285,31 @@ az deployment group create \
     apiKey="$API_KEY" workerDeploymentEnabled=false
 ```
 
+For a protected existing ACR, set `ACR_NAME` to its resource name, set both image
+variables to that registry's approved digest references, and add
+`acrName="$ACR_NAME"` to both preview/deployment parameter lists. Do not set
+`PUBLIC_IMAGES_CONFIRMED` merely to bypass an ACR image-pull configuration error.
+
 An environment-expanded secret argument can be visible to local process
 inspection. Use a trusted deployment runner, disable shell tracing and prefer
 approved secure parameter/Key Vault integration in CI. Never put actual values in
 checked-in parameter files. Outputs include resource identifiers and the gateway
 URL, never API or Redis credentials.
 
+`deploy/bicep/main.bicepparam` reads deployment values from the environment rather
+than committing credentials. Set `GATEWAY_IMAGE`, `WORKER_IMAGE` and `API_KEY`
+before compiling or deploying it; prefix/location are editable nonsecret choices
+and `workerDeploymentEnabled` remains false. With a recent Azure CLI/Bicep, use
+`--parameters deploy/bicep/main.bicepparam` instead of individual parameters.
+Do not persist generated parameter JSON: it contains resolved secure values.
+The file also reads optional `ACR_NAME`, defaulting to empty.
+
 Compilation is static validation, not proof of successful Azure provisioning.
 Run `what-if`, a controlled deployment, DNS/private-endpoint resolution checks,
 identity/RBAC checks and authenticated end-to-end tests in your subscription.
 Account for eventual RBAC propagation and private DNS readiness. This template
 does not configure custom domains, WAF, egress filtering, budgets, alert rules,
-registry identity, availability-zone redundancy, backup or disaster recovery.
+ACR provisioning/networking, availability-zone redundancy, backup or disaster recovery.
 Private DNS zone names assume a resource group without conflicting existing
 zones; integrate with centrally owned zones for shared-network deployments.
 
@@ -221,6 +318,11 @@ string through an ACA secret. The current application starts OpenTelemetry only
 when `OTEL_EXPORTER_OTLP_ENDPOINT` is configured; it does not consume that
 Application Insights connection string as an exporter. A reviewed collector or
 Azure Monitor exporter integration is still required for application traces.
+The optional `otlpEndpoint` deployment parameter defaults to empty and sets
+`OTEL_EXPORTER_OTLP_ENDPOINT`. Point it only to a reviewed, reachable OTLP collector,
+not an Application Insights ingestion URL. The parameter file reads that
+environment variable, defaulting to empty. No collector, exporter authentication
+or automatic trace delivery is provisioned.
 ACA console logs reach Log Analytics independently. Do not point a generic OTLP
 exporter at an Application Insights ingestion URL and assume compatibility.
 
@@ -251,7 +353,7 @@ unauthenticated Docker TCP API.
 BullMQ defaults to prefix `bull`, queue name `attachments`, and waiting list
 `bull:attachments:wait`. The opt-in template uses that exact Redis list, TLS and
 a secret-authenticated KEDA Redis scaler. It scales from zero, caps replicas at
-five, and never needs HTTP ingress. If the adapter changes the queue prefix/name,
+ten, and never needs HTTP ingress. If the adapter changes the queue prefix/name,
 the scaler must change too; `support-shield:wait` is **not** the default key.
 
 This scaler observes only the waiting list. Delayed, prioritized,

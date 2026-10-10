@@ -60,7 +60,7 @@ rather than silently bypass a control.
 ## Lifecycle and API
 
 ```text
-authenticated upload -> QUEUED -> PROCESSING -> CLEAN_READY
+authenticated upload -> QUEUED -> PROCESSING -> CLEAN
                               \              \-> QUARANTINE_REJECTED
                                \----------------> QUARANTINE_REJECTED
 ```
@@ -72,10 +72,18 @@ service key is not per-user authorization: tenant ownership and download
 authorization would require additional reviewed layers. Webhook delivery is
 reserved and not implemented. See [API specification](API_SPEC.md).
 
+Queue acceptance and its acknowledgement can diverge: Redis may commit a job
+before a network error causes an HTTP `503`. Once enqueue is attempted, retain
+quarantine input on error rather than deleting an input a committed job may need.
+Delivery is at-least-once; no client idempotency/deduplication contract is
+implemented, and retries after ambiguous responses can submit additional jobs.
+
 Azure quarantine expires asynchronously after more than one day without
 modification. Long-lived queued jobs can lose their input and must then reject.
 Clean storage remains private. This reference does not provide a public download
 endpoint or automatically enforce business retention on clean artifacts.
+Lifecycle deletion also handles unreferenced input retained after an ambiguous
+enqueue result; it is not an exact 24-hour deletion SLA.
 
 ## Azure topology and supported execution
 
@@ -84,6 +92,14 @@ VNet-integrated ACA environment, private-endpoint storage, TLS-only private Redi
 distinct managed identities and gateway. Gateway has quarantine contributor
 access only; worker has quarantine reader and clean contributor access. Storage
 account keys and anonymous/public blob access are disabled.
+
+Optional `acrName` selects an existing same-resource-group Azure Container
+Registry. Each app uses its own UAMI registry configuration and registry-scoped
+AcrPull assignment; no ACR admin/password credential is created. Registry
+provisioning, publishing permissions and network/DNS reachability remain
+protected infrastructure responsibilities. Without ACR configuration, image
+references must be publicly pullable. Image references remain immutable digests
+from the selected registry; the template does not rewrite them.
 
 **ACA cannot run the local Docker sibling-container backend.** The template's
 `workerDeploymentEnabled` parameter defaults to false. Its optional
@@ -98,7 +114,7 @@ gateway, share the host with unrelated workloads, or treat UID restrictions as
 protection against a malicious Docker controller.
 
 The future KEDA design watches `bull:attachments:wait` over TLS with an ACA secret,
-min replicas zero and max five. It does not observe delayed/prioritized/active
+min replicas zero and max ten. It does not observe delayed/prioritized/active
 jobs and has not been validated with a supported ACA sandbox backend. Queue key
 changes must update the scaler.
 
@@ -108,6 +124,12 @@ ACA console logs reach Log Analytics. Application Insights is provisioned, but
 the current OpenTelemetry adapter requires a configured OTLP exporter endpoint;
 a connection string alone does not activate trace export. A reviewed collector
 or Azure Monitor integration and environment-specific alerting remain required.
+The optional `otlpEndpoint` parameter sets `OTEL_EXPORTER_OTLP_ENDPOINT` and
+defaults to empty; it must not point at an incompatible Insights ingestion URL.
+
+Gateway replicas range from one to ten. The 30/minute client rate limit and
+16-concurrent-upload cap apply within a replica, not across a scaled deployment.
+Global edge enforcement and backlog/capacity budgets remain operational controls.
 
 Rebuilding/rasterization reduces some active-content risks but is not antivirus,
 DLP or a guarantee that visible content is harmless. Kernel/container escape,

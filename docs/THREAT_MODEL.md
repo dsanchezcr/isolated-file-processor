@@ -62,6 +62,14 @@ object locations, expected MIME/output format, byte counts and parser response
 schemas before clean writes. External callers must not select host paths, Docker
 arguments, images, parser commands or cloud object names.
 
+Queue-publication errors are not rollbacks. Redis commit followed by
+acknowledgement loss can leave an accepted job behind an HTTP `503`; deleting
+quarantine then would destroy active input. Retain input after attempted
+publication and expire orphans with the asynchronous quarantine lifecycle.
+At-least-once delivery and ambiguous submission retries require reconciliation;
+client idempotency is not implemented. Do not claim exactly-once processing or
+precise 24-hour deletion.
+
 ## GitHub and supply chain
 
 Workflows are automation, not evidence that repository security settings are

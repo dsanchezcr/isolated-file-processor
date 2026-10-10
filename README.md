@@ -43,6 +43,9 @@ proof that an output is harmless**.
 
 Prerequisites: Node.js 22+, Docker with Compose, `openssl`, and `curl`. Run Docker
 only on a disposable, dedicated development/execution machine.
+**Image preparation is required:** supply reviewed patched MinIO and `mc` images
+by digest first. This is a setup recipe, not a runnable one-command fixture:
+older official MinIO images have a known advisory and are not a safe fallback.
 
 ```sh
 npm ci
@@ -88,7 +91,7 @@ curl --fail-with-body \
 ```
 
 `202 Accepted` means queued, not safe. Poll until a terminal result:
-`CLEAN_READY` or `QUARANTINE_REJECTED`. See [API contract](docs/API_SPEC.md) for
+`CLEAN` or `QUARANTINE_REJECTED`. See [API contract](docs/API_SPEC.md) for
 validation and lifecycle details. Webhook delivery is reserved, not implemented.
 
 ## Security envelope
@@ -115,6 +118,8 @@ threat. See [threat model and controls](docs/THREAT_MODEL.md).
 VNet-integrated Container Apps environment, private-endpoint Blob Storage and
 TLS-only Azure Cache for Redis, scoped identities, and the gateway. Quarantine
 has a one-day lifecycle rule (asynchronous deletion, not an exact deletion SLA).
+Optional `acrName` enables passwordless UAMI image pulls from an existing ACR;
+otherwise gateway images must be publicly pullable.
 Redis availability/retirement and the missing ACA sandbox backend must be
 resolved before any production rollout.
 
