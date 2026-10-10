@@ -127,9 +127,13 @@ or Azure Monitor integration and environment-specific alerting remain required.
 The optional `otlpEndpoint` parameter sets `OTEL_EXPORTER_OTLP_ENDPOINT` and
 defaults to empty; it must not point at an incompatible Insights ingestion URL.
 
-Gateway replicas range from one to ten. The 30/minute client rate limit and
+Gateway replicas range from one to ten and the HTTP scaler targets eight
+concurrent requests, below the 16-active-upload cap. The 30/minute observed-IP rate limit and
 16-concurrent-upload cap apply within a replica, not across a scaled deployment.
 Global edge enforcement and backlog/capacity budgets remain operational controls.
+The gateway keeps `trustProxy` false. Reverse-proxy client-IP attribution requires
+reviewed trusted CIDRs/topology; blindly trusting forwarding headers enables
+spoofing and can defeat rate limits.
 
 Rebuilding/rasterization reduces some active-content risks but is not antivirus,
 DLP or a guarantee that visible content is harmless. Kernel/container escape,

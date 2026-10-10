@@ -206,11 +206,17 @@ managed-identity image pull path.
 | `containerApps` | Authenticated gateway; opt-in nonfunctional worker/KEDA blueprint |
 
 Gateway scales from one to ten replicas; the unsupported worker blueprint scales
-from zero to ten. Gateway admission currently limits requests to 30/minute per
-client per replica and concurrent uploads to 16 per replica. These in-process
+from zero to ten. The HTTP scaler targets eight concurrent requests, below the
+16-active-upload admission cap; autoscaling is not instantaneous capacity.
+Gateway admission currently limits requests to 30/minute per observed client IP
+per replica and concurrent uploads to 16 per replica. These in-process
 limits are **not global quotas**: scaling adds admission capacity. Configure
 global edge rate limits, caller quotas, total backlog/queue-age budgets and
 execution-host capacity controls before production.
+`trustProxy` is false: behind ACA/reverse proxies the observed IP may be the proxy,
+not the originating caller. Review trusted proxy CIDRs and global edge limits
+for the deployment topology; do not blanket-enable `trustProxy: true` or trust
+arbitrary client-supplied forwarding headers.
 
 The adapter uses containers `quarantine-files` and `clean-files`.
 Gateway identity: **Storage Blob Data Contributor on quarantine only**.

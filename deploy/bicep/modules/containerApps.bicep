@@ -96,7 +96,7 @@ resource gateway 'Microsoft.App/containerApps@2024-03-01' = {
         minReplicas: 1
         maxReplicas: 10
         rules: [
-          { name: 'http', http: { metadata: { concurrentRequests: '20' } } }
+          { name: 'http', http: { metadata: { concurrentRequests: '8' } } }
         ]
       }
     }

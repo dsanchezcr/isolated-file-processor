@@ -6,6 +6,10 @@ HTTPS outside local development. A shared API key is a service credential, not
 per-user authorization or tenant isolation; rotate it and restrict callers.
 No wildcard CORS policy is configured. Browser access requires a reviewed,
 explicit origin allowlist; do not embed the service API key in a public frontend.
+Requests are limited to 30/minute per observed IP and uploads to 16 active requests
+per gateway process. `trustProxy` is false; deployment-specific trusted proxy
+CIDRs and edge-wide rate limits need review, not blanket trust of forwarding
+headers. These local limits are not a global budget across replicas.
 
 ## Submit
 
