@@ -18,6 +18,42 @@ jobs:
     timeout-minutes: 25
     env:
       RUN_DOCKER_TESTS: "1"
+      SANDBOX_IMAGE: sandbox-runner:local
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1 # v7.1.0
+        with:
+          node-version: "22"
+          cache: npm
+      - run: npm ci --ignore-scripts
+      - run: npm run typecheck && npm run build && npm run test:unit
+      - name: Validate image build definitions
+        run: docker buildx bake -f docker/docker-bake.hcl --print >/dev/null
+      - name: Build real sandbox and distroless host images
+        run: |
+          docker build --target sandbox-runner -f docker/Dockerfile.sandbox-runner -t sandbox-runner:local .
+          docker build --target gateway -f docker/Dockerfile.gateway -t support-shield/gateway:local .
+          docker build --target worker -f docker/Dockerfile.worker -t support-shield/worker:local .
+          docker run --rm --entrypoint /usr/local/bin/docker support-shield/worker:local --version
+          for image in gateway worker; do
+            docker run --rm --entrypoint /nodejs/bin/node "support-shield/$image:local" \
+              --input-type=module -e 'for (const name of ["sharp","pdf-lib","yauzl"]) { try { import.meta.resolve(name); process.exit(1); } catch (error) { if (error.code !== "ERR_MODULE_NOT_FOUND") throw error; } }'
+          done
+      - name: Docker isolation and exploit regression tests
+        run: npm run test:integration && npm run test:exploits
+      - name: Cleanup dedicated CI sandboxes
+        if: always()
+        run: |
+          ids="$(docker ps -aq --filter label=supportshield.sandbox=true)"
+          if [ -n "$ids" ]; then docker rm -f $ids; fi
+
+  service-integration:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 25
+    env:
+      RUN_DOCKER_TESTS: "1"
       RUN_INTEGRATION_TESTS: "1"
       SANDBOX_IMAGE: sandbox-runner:local
       STORAGE_BACKEND: minio
@@ -34,8 +70,7 @@ jobs:
           node-version: "22"
           cache: npm
       - run: npm ci --ignore-scripts
-      - run: npm run typecheck && npm run build && npm run test:unit
-      - name: Validate infrastructure definitions
+      - name: Validate service infrastructure definitions
         env:
           MINIO_IMAGE: ${{ vars.MINIO_IMAGE }}
           MINIO_MC_IMAGE: ${{ vars.MINIO_MC_IMAGE }}
@@ -45,17 +80,8 @@ jobs:
           export API_KEY="$(openssl rand -hex 32)"
           export DOCKER_GID="$(stat -c '%g' /var/run/docker.sock)"
           docker compose -f deploy/compose.yaml -f deploy/compose.override.yaml --profile execution-host config --quiet
-          docker buildx bake -f docker/docker-bake.hcl --print >/dev/null
-      - name: Build real sandbox and distroless host images
-        run: |
-          docker build --target sandbox-runner -f docker/Dockerfile.sandbox-runner -t sandbox-runner:local .
-          docker build --target gateway -f docker/Dockerfile.gateway -t support-shield/gateway:local .
-          docker build --target worker -f docker/Dockerfile.worker -t support-shield/worker:local .
-          docker run --rm --entrypoint /usr/local/bin/docker support-shield/worker:local --version
-          for image in gateway worker; do
-            docker run --rm --entrypoint /nodejs/bin/node "support-shield/$image:local" \
-              --input-type=module -e 'for (const name of ["sharp","pdf-lib","yauzl"]) { try { import.meta.resolve(name); process.exit(1); } catch (error) { if (error.code !== "ERR_MODULE_NOT_FOUND") throw error; } }'
-          done
+      - name: Build service sandbox
+        run: docker build --target sandbox-runner -f docker/Dockerfile.sandbox-runner -t sandbox-runner:local .
       - name: Start isolated CI integration infrastructure
         env:
           MINIO_IMAGE: ${{ vars.MINIO_IMAGE }}
@@ -92,8 +118,8 @@ jobs:
             test "$attempt" -lt 30
             sleep 1
           done
-      - name: Real Redis/MinIO integration and Docker exploit regression tests
-        run: npm run test:integration && npm run test:exploits
+      - name: Real Redis/MinIO service integration tests
+        run: npm run test:integration
       - name: Cleanup dedicated CI resources
         if: always()
         run: |

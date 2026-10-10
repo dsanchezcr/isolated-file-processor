@@ -79,8 +79,11 @@ enabled. An administrator must:
    push protection, subject to repository visibility and organization licensing.
 2. Configure CodeQL analysis and inspect findings, not merely check for a YAML
    file. CodeQL cannot prove sandbox security or analyze all parser binaries.
-3. Protect the release/default branch: require PR review and the actual CI,
-   exploit-regression, CodeQL and image-scan checks; restrict bypass and pushes.
+3. Protect the release/default branch: require PR review and the actual CI
+   `test` (including Docker/exploit regressions), `service-integration`,
+   CodeQL `analyze`, dependency `dependencies` and Bicep `compile` checks;
+   restrict bypass and pushes. Require every release Scout matrix check before
+   consuming published images.
 4. Give Actions minimal permissions. Use scoped Docker Hub publishing credentials
    (organization namespace, no administrator token) and Azure workload identity
    federation with subject restrictions, not long-lived Azure client secrets.
@@ -115,6 +118,20 @@ organization policy and verify every image/platform against it; source JSON,
 successful builds, clean vulnerability scans and SBOM presence are not license
 approval. Do not claim compliance before real configured Scout checks and
 required approvals pass.
+
+## Validation lanes
+
+CI runs typecheck/build/unit tests, host-image parser-exclusion checks, real
+Docker isolation probes and exploit regressions independently of MinIO. A
+separate mandatory `service-integration` job exercises real Redis/MinIO and the
+Docker sandbox. Missing reviewed `MINIO_IMAGE` or `MINIO_MC_IMAGE` digests fail
+that job; they must not skip it or suppress independent sandbox checks.
+
+Locally, `npm test` skips real Docker and service tests unless
+`RUN_DOCKER_TESTS=1` and `RUN_INTEGRATION_TESTS=1` are set, respectively. A passing
+default run is not full end-to-end evidence. Real Docker tests include truncated
+PDF/image/archive inputs and excessive PDF page counts, in addition to isolation,
+deadline cleanup, metadata removal and archive-bomb regressions.
 
 ## Operational acceptance checklist
 

@@ -6,6 +6,7 @@ import sharp from 'sharp';
 import { afterAll, beforeAll, describe, expect, it } from 'vitest';
 import type { ProcessAttachmentJob } from '../../src/core/domain/file-payload.js';
 import type { AllowedMime } from '../../src/core/domain/file-payload.js';
+import { SECURITY_PROFILE } from '../../src/core/domain/security-profile.js';
 import { DockerCliSandboxAdapter } from '../../src/infrastructure/sandbox/docker-cli-sandbox.adapter.js';
 import { zipFixture } from '../exploits/fixtures.js';
 
@@ -149,5 +150,24 @@ describe.skipIf(!enabled)('real disposable Docker isolation', () => {
     await expect(sandbox.run(job(bomb, 'application/zip'), input(bomb))).rejects.toThrow();
     const nested = gzipSync(gzipSync(Buffer.from('harmless nested fixture')));
     await expect(sandbox.run(job(nested, 'application/gzip'), input(nested))).rejects.toThrow();
+  }, 30_000);
+
+  it.each([
+    ['application/pdf', Buffer.from('%PDF-1.7\ntruncated')],
+    ['image/png', Buffer.from([137, 80, 78, 71, 13, 10, 26, 10])],
+    ['image/jpeg', Buffer.from([0xff, 0xd8, 0xff])],
+    ['application/zip', Buffer.from('PK\x03\x04')],
+    ['application/gzip', gzipSync(Buffer.from('log')).subarray(0, 10)],
+  ] as const)('rejects truncated %s content inside the real sandbox', async (mime, bytes) => {
+    const sandbox = new DockerCliSandboxAdapter({ image: baseImage });
+    await expect(sandbox.run(job(bytes, mime), input(bytes))).rejects.toThrow();
+  }, 30_000);
+
+  it('rejects PDFs exceeding the page limit inside the real sandbox', async () => {
+    const document = await PDFDocument.create();
+    for (let page = 0; page <= SECURITY_PROFILE.maxPdfPages; page += 1) document.addPage([100, 100]);
+    const bytes = Buffer.from(await document.save());
+    const sandbox = new DockerCliSandboxAdapter({ image: baseImage });
+    await expect(sandbox.run(job(bytes, 'application/pdf'), input(bytes))).rejects.toThrow();
   }, 30_000);
 });
