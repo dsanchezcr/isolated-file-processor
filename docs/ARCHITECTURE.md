@@ -43,6 +43,13 @@ boundary. The public API never invokes a parser or obtains Docker privileges.
 for storage, queues, telemetry and sandbox execution. Node, Fastify, BullMQ,
 Azure SDK and Docker details belong in adapters, not core.
 
+Architecture source guards check module references, including side-effect,
+dynamic, type-only and CommonJS imports, and reject computed module references.
+These source checks are regression guardrails, not a substitute for code review.
+They also traverse gateway/worker entrypoint imports to prevent host processes
+from loading sandbox parser modules or parser packages. Image checks separately
+verify that parser packages are absent from both deployed host images.
+
 The gateway generates object/job identifiers, bounds streamed uploads, records
 quarantine metadata and enqueues work only after acceptance. The worker validates
 the queue envelope and invokes a sandbox port. Docker is the currently supported
@@ -56,6 +63,11 @@ and nesting; PDFs cap at 20 pages and images at 16 million pixels. Docker caps
 memory at 256 MiB, scratch at 64 MiB, CPU at 0.5 and PIDs at 32. The execution
 deadline is 15 seconds. Shutdown and errors must await cleanup; failures reject
 rather than silently bypass a control.
+
+The opt-in real Redis/MinIO/Docker service tests cover both successful rebuilding
+and archive-bomb rejection, including authenticated terminal polling and absence
+of clean artifacts after rejection. These tests require reviewed storage fixture
+images; skipped tests are not end-to-end validation evidence.
 
 ## Lifecycle and API
 

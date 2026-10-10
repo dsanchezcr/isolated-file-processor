@@ -12,6 +12,7 @@ import { BullMQAdapter, QUEUE_NAME, redisConnection } from '../../src/infrastruc
 import { DockerCliSandboxAdapter } from '../../src/infrastructure/sandbox/docker-cli-sandbox.adapter.js';
 import { OTelAdapter } from '../../src/infrastructure/telemetry/otel.adapter.js';
 import { createWorker } from '../../src/worker/consumer.js';
+import { zipFixture } from '../exploits/fixtures.js';
 
 const enabled = process.env['RUN_INTEGRATION_TESTS'] === '1';
 
@@ -94,5 +95,40 @@ describe.skipIf(!enabled)('real Redis/MinIO/Docker ingestion', () => {
     });
     const poll = await server.inject({ url: `/attachments/${fileId}`, headers: { authorization } });
     expect(poll.json()).toEqual(result);
+  });
+
+  it('rejects a declared archive bomb without writing either clean object', async () => {
+    const original = zipFixture({ bytes: Buffer.from('a'), zip64DeclaredSize: 4_500_000_000n });
+    const payload = Buffer.concat([
+      Buffer.from('--reject\r\nContent-Disposition: form-data; name="file"; filename="logs.zip"\r\nContent-Type: application/zip\r\n\r\n'),
+      original,
+      Buffer.from('\r\n--reject--\r\n'),
+    ]);
+    const response = await server.inject({
+      method: 'POST', url: '/attachments',
+      headers: { authorization, 'content-type': 'multipart/form-data; boundary=reject' }, payload,
+    });
+    expect(response.statusCode).toBe(202);
+    const body: unknown = response.json();
+    if (typeof body !== 'object' || body === null || !('fileId' in body) || typeof body.fileId !== 'string') {
+      throw new Error('Invalid acceptance response');
+    }
+    const fileId = body.fileId;
+    quarantineKeys.push(`${fileId}/original`);
+    const keys = [`${fileId}/sanitized`, `${fileId}/sanitized.manifest.json`];
+    cleanKeys.push(...keys);
+    const deadline = Date.now() + 25_000;
+    let result = await queue.getState(fileId);
+    while (result?.status === 'QUEUED' || result?.status === 'PROCESSING') {
+      if (Date.now() >= deadline) throw new Error('Processing did not complete');
+      await sleep(100);
+      result = await queue.getState(fileId);
+    }
+    expect(result?.status).toBe('QUARANTINE_REJECTED');
+    const poll = await server.inject({ url: `/attachments/${fileId}`, headers: { authorization } });
+    expect(poll.json()).toEqual(result);
+    for (const key of keys) {
+      await expect(storage.get('clean', key)).rejects.toMatchObject({ name: 'NoSuchKey' });
+    }
   });
 });
