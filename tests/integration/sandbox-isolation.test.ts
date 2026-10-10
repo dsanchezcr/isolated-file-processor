@@ -7,6 +7,7 @@ import { afterAll, beforeAll, describe, expect, it } from 'vitest';
 import type { ProcessAttachmentJob } from '../../src/core/domain/file-payload.js';
 import type { AllowedMime } from '../../src/core/domain/file-payload.js';
 import { DockerCliSandboxAdapter } from '../../src/infrastructure/sandbox/docker-cli-sandbox.adapter.js';
+import { zipFixture } from '../exploits/fixtures.js';
 
 const enabled = process.env.RUN_DOCKER_TESTS === '1';
 const baseImage = process.env.SANDBOX_IMAGE ?? 'supportshield-sandbox:test';
@@ -60,6 +61,8 @@ describe.skipIf(!enabled)('real disposable Docker isolation', () => {
           rootOptions: mounts.find(line => line[1] === '/')[3].split(','),
           scratchOptions: mounts.find(line => line[1] === '/scratch')[3].split(','),
           capabilities: /^CapEff:\\s+(\\w+)$/m.exec(status)[1],
+          capabilityBoundingSet: /^CapBnd:\\s+(\\w+)$/m.exec(status)[1],
+          permittedCapabilities: /^CapPrm:\\s+(\\w+)$/m.exec(status)[1],
           noNewPrivileges: /^NoNewPrivs:\\s+(\\d+)$/m.exec(status)[1],
           memory: read(['/sys/fs/cgroup/memory.max', '/sys/fs/cgroup/memory/memory.limit_in_bytes']),
           pids: read(['/sys/fs/cgroup/pids.max', '/sys/fs/cgroup/pids/pids.max']),
@@ -90,6 +93,8 @@ describe.skipIf(!enabled)('real disposable Docker isolation', () => {
     expect(report.rootOptions).toContain('ro');
     expect(report.scratchOptions).toEqual(expect.arrayContaining(['nosuid', 'nodev', 'noexec']));
     expect(report.capabilities).toMatch(/^0+$/);
+    expect(report.capabilityBoundingSet).toMatch(/^0+$/);
+    expect(report.permittedCapabilities).toMatch(/^0+$/);
     expect(report.noNewPrivileges).toBe('1');
     expect(report.memory).toBe('268435456');
     expect(report.pids).toBe('32');
@@ -131,5 +136,18 @@ describe.skipIf(!enabled)('real disposable Docker isolation', () => {
     expect(rebuilt.getPageCount()).toBe(1);
     expect(rebuilt.catalog.has(PDFName.of('OpenAction'))).toBe(false);
     expect(rebuilt.getPage(0).node.Resources()?.has(PDFName.of('XObject'))).toBe(true);
+  }, 30_000);
+
+  it('extracts only UTF-8 logs and rejects declared ZIP64 bombs inside the real sandbox', async () => {
+    const sandbox = new DockerCliSandboxAdapter({ image: baseImage });
+    const archive = zipFixture();
+    const artifact = await sandbox.run(job(archive, 'application/zip'), input(archive));
+    expect(artifact.mime).toBe('text/plain');
+    expect(Buffer.from(artifact.bytes).toString()).toContain('safe log');
+    const bomb = zipFixture({ bytes: Buffer.from('a'), zip64DeclaredSize: 4_500_000_000n });
+    expect(bomb.length).toBeLessThan(256);
+    await expect(sandbox.run(job(bomb, 'application/zip'), input(bomb))).rejects.toThrow();
+    const nested = gzipSync(gzipSync(Buffer.from('harmless nested fixture')));
+    await expect(sandbox.run(job(nested, 'application/gzip'), input(nested))).rejects.toThrow();
   }, 30_000);
 });

@@ -38,10 +38,12 @@ export class BullMQAdapter implements QueuePort {
   }
 
   async enqueue(job: ProcessAttachmentJob): Promise<void> {
+    await this.queue.waitUntilReady();
     await this.queue.add('process-attachment', job, { jobId: job.fileId });
   }
 
   async getState(fileId: string): Promise<JobState | undefined> {
+    await this.queue.waitUntilReady();
     const job = await this.queue.getJob(fileId);
     if (!job) return undefined;
     const state = await job.getState();

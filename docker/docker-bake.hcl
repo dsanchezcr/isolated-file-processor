@@ -1,5 +1,5 @@
 variable "REGISTRY" {
-  default = "local"
+  default = "support-shield"
 }
 variable "SECONDARY_REGISTRY" {
   default = ""
@@ -42,6 +42,7 @@ target "sandbox-runner" {
   target = "sandbox-runner"
   tags = concat(
     ["${REGISTRY}/sandbox-runner:${TAG}"],
-    SECONDARY_REGISTRY != "" ? ["${SECONDARY_REGISTRY}/sandbox-runner:${TAG}"] : []
+    SECONDARY_REGISTRY != "" ? ["${SECONDARY_REGISTRY}/sandbox-runner:${TAG}"] : [],
+    TAG == "local" ? ["sandbox-runner:local"] : []
   )
 }

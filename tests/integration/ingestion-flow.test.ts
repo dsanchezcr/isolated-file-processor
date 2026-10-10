@@ -34,9 +34,11 @@ class MemoryStorage implements StoragePort {
 class MemoryQueue implements QueuePort {
   readonly jobs: ProcessAttachmentJob[] = [];
   fail = false;
+  loseAcknowledgement = false;
   async enqueue(job: ProcessAttachmentJob): Promise<void> {
     if (this.fail) throw new Error('Queue unavailable');
     this.jobs.push(job);
+    if (this.loseAcknowledgement) throw new Error('Queue acknowledgement lost');
   }
   async getState(id: string): Promise<JobState | undefined> {
     return this.jobs.some(job => job.fileId === id) ? { status: 'QUEUED' } : undefined;
@@ -107,12 +109,37 @@ describe('ingestion HTTP boundary', () => {
     expect((await server.inject('/health')).statusCode).toBe(200);
   });
 
-  it('deletes the quarantine object if queue publication fails', async () => {
+  it('retains quarantine if queue publication has an uncertain outcome', async () => {
     const { server, storage, queue } = await fixture();
     queue.fail = true;
     const response = await server.inject({ method: 'POST', url: '/attachments', headers: headers(), payload: multipart(Buffer.from('%PDF-1.7')) });
     expect(response.statusCode).toBe(503);
+    expect(storage.objects.size).toBe(1);
+  });
+
+  it('does not delete the input when Redis accepts a job but loses its acknowledgement', async () => {
+    const { server, storage, queue } = await fixture();
+    queue.loseAcknowledgement = true;
+    const bytes = Buffer.from('%PDF-1.7');
+    const response = await server.inject({ method: 'POST', url: '/attachments', headers: headers(), payload: multipart(bytes) });
+    expect(response.statusCode).toBe(503);
+    const job = queue.jobs[0];
+    expect(job).toBeDefined();
+    if (!job) throw new Error('Expected published job');
+    expect(storage.objects.get(job.quarantineKey)).toEqual(bytes);
+  });
+
+  it('deletes a partial quarantine object when storage fails before publication', async () => {
+    const { server, storage, queue } = await fixture();
+    const original = storage.put.bind(storage);
+    storage.put = async (area, key, source) => {
+      await original(area, key, source);
+      throw new Error('Storage failure');
+    };
+    const response = await server.inject({ method: 'POST', url: '/attachments', headers: headers(), payload: multipart(Buffer.from('%PDF-1.7')) });
+    expect(response.statusCode).toBe(503);
     expect(storage.objects.size).toBe(0);
+    expect(queue.jobs).toHaveLength(0);
   });
 
   it('rejects oversized streams without enqueueing truncated content', async () => {
@@ -138,5 +165,35 @@ describe('ingestion HTTP boundary', () => {
     let status = 0;
     for (let index = 0; index < 31; index++) status = (await server.inject('/health')).statusCode;
     expect(status).toBe(429);
+  });
+
+  it('bounds concurrent uploads even across different clients', async () => {
+    const { server, storage } = await fixture();
+    let release = (): void => {};
+    let ready = (): void => {};
+    const gate = new Promise<void>(resolve => { release = resolve; });
+    const entered = new Promise<void>(resolve => { ready = resolve; });
+    const original = storage.put.bind(storage);
+    let active = 0;
+    storage.put = async (area, key, source) => {
+      await original(area, key, source);
+      if (++active === 16) ready();
+      await gate;
+    };
+    const pending = Array.from({ length: 16 }, (_, index) => server.inject({
+      method: 'POST', url: '/attachments', headers: headers(),
+      remoteAddress: `192.0.2.${index + 1}`, payload: multipart(Buffer.from('%PDF-1.7')),
+    }).then(response => response.statusCode));
+    try {
+      await entered;
+      const overflow = await server.inject({
+        method: 'POST', url: '/attachments', headers: headers(),
+        remoteAddress: '192.0.2.100', payload: multipart(Buffer.from('%PDF-1.7')),
+      });
+      expect(overflow.statusCode).toBe(429);
+    } finally {
+      release();
+      expect(await Promise.all(pending)).toEqual(Array.from({ length: 16 }, () => 202));
+    }
   });
 });

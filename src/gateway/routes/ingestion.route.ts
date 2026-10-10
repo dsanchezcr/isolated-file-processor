@@ -1,5 +1,5 @@
 import { createHash, randomUUID } from 'node:crypto';
-import type { FastifyInstance } from 'fastify';
+import type { FastifyInstance, FastifyReply, FastifyRequest } from 'fastify';
 import type { StoragePort, ByteStream } from '../../core/ports/storage.port.js';
 import type { QueuePort } from '../../core/ports/queue.port.js';
 import type { TelemetryPort } from '../../core/ports/telemetry.port.js';
@@ -24,54 +24,7 @@ export function registerIngestionRoutes(server: FastifyInstance, deps: GatewayDe
       if (typeof value === 'string' && value.length <= 512) carrier[name] = value;
     }
     try {
-      return await deps.telemetry.run('attachment.ingest', carrier, async () => {
-    const fileId = randomUUID();
-    const quarantineKey = `${fileId}/original`;
-    let stored = false;
-    try {
-      const parts = request.parts({ limits: { files: 1, fields: 0, parts: 1, fileSize: SECURITY_PROFILE.maxUploadBytes } });
-      const part = await parts.next();
-      if (part.done || part.value.type !== 'file') throw new DomainError('One file is required', 'INVALID_UPLOAD', 400);
-      const file = part.value;
-      const deadline = setTimeout(() => file.file.destroy(new DomainError('Upload timed out', 'UPLOAD_TIMEOUT', 408)), 60_000);
-      deadline.unref();
-      try {
-        const { mime, stream } = await sniffStream(file.file);
-        const hash = createHash('sha256');
-        let sizeBytes = 0;
-        const measured: ByteStream = (async function* () {
-          for await (const bytes of stream) {
-            sizeBytes += bytes.byteLength;
-            if (sizeBytes > SECURITY_PROFILE.maxUploadBytes) throw new PayloadTooLargeError();
-            hash.update(bytes);
-            yield bytes;
-          }
-          if (file.file.truncated) throw new PayloadTooLargeError();
-        })();
-        stored = true;
-        await deps.storage.put('quarantine', quarantineKey, measured, mime);
-        if (file.file.truncated) throw new PayloadTooLargeError();
-        const extra = await parts.next();
-        if (!extra.done) throw new DomainError('Only one file is accepted', 'INVALID_UPLOAD', 400);
-        await deps.queue.enqueue({
-          fileId, quarantineKey, claimedMime: file.mimetype, detectedMime: mime,
-          sha256: hash.digest('hex'), sizeBytes, traceContext: deps.telemetry.inject(),
-        });
-        return reply.code(202).send({
-          fileId, status: 'QUEUED', statusUrl: `/attachments/${fileId}`, pollAfterSeconds: 2,
-        });
-      } finally {
-        clearTimeout(deadline);
-        if (!file.file.readableEnded) file.file.destroy();
-      }
-    } catch (error) {
-      if (stored) {
-        try { await deps.storage.delete('quarantine', quarantineKey); }
-        catch { request.log.error({ fileId }, 'Quarantine cleanup failed'); }
-      }
-      throw error;
-    }
-      });
+      return await deps.telemetry.run('attachment.ingest', carrier, () => ingest(request, reply, deps));
     } finally {
       activeUploads--;
     }
@@ -86,4 +39,57 @@ export function registerIngestionRoutes(server: FastifyInstance, deps: GatewayDe
     if (!state) return reply.code(404).send({ code: 'NOT_FOUND' });
     return state;
   });
+}
+
+async function ingest(request: FastifyRequest, reply: FastifyReply, deps: GatewayDependencies) {
+  const fileId = randomUUID();
+  const quarantineKey = `${fileId}/original`;
+  let stored = false;
+  let publicationAttempted = false;
+  try {
+    const parts = request.parts({ limits: { files: 1, fields: 0, parts: 1, fileSize: SECURITY_PROFILE.maxUploadBytes } });
+    const part = await parts.next();
+    if (part.done || part.value.type !== 'file') throw new DomainError('One file is required', 'INVALID_UPLOAD', 400);
+    const file = part.value;
+    const deadline = setTimeout(() => file.file.destroy(new DomainError('Upload timed out', 'UPLOAD_TIMEOUT', 408)), 60_000);
+    deadline.unref();
+    try {
+      const { mime, stream } = await sniffStream(file.file);
+      const hash = createHash('sha256');
+      let sizeBytes = 0;
+      const measured: ByteStream = (async function* () {
+        for await (const bytes of stream) {
+          sizeBytes += bytes.byteLength;
+          if (sizeBytes > SECURITY_PROFILE.maxUploadBytes) throw new PayloadTooLargeError();
+          hash.update(bytes);
+          yield bytes;
+        }
+        if (file.file.truncated) throw new PayloadTooLargeError();
+      })();
+      stored = true;
+      await deps.storage.put('quarantine', quarantineKey, measured, mime);
+      if (file.file.truncated) throw new PayloadTooLargeError();
+      const extra = await parts.next();
+      if (!extra.done) throw new DomainError('Only one file is accepted', 'INVALID_UPLOAD', 400);
+      publicationAttempted = true;
+      await deps.queue.enqueue({
+        fileId, quarantineKey, claimedMime: file.mimetype, detectedMime: mime,
+        sha256: hash.digest('hex'), sizeBytes, traceContext: deps.telemetry.inject(),
+      });
+      return reply.code(202).send({
+        fileId, status: 'QUEUED', statusUrl: `/attachments/${fileId}`, pollAfterSeconds: 2,
+      });
+    } finally {
+      clearTimeout(deadline);
+      if (!file.file.readableEnded) file.file.destroy();
+    }
+  } catch (error) {
+    if (stored && !publicationAttempted) {
+      try { await deps.storage.delete('quarantine', quarantineKey); }
+      catch { request.log.error({ fileId }, 'Quarantine cleanup failed'); }
+    } else if (publicationAttempted) {
+      request.log.warn({ fileId }, 'Queue publication outcome unknown; quarantine retained');
+    }
+    throw error;
+  }
 }

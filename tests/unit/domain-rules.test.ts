@@ -1,7 +1,7 @@
 import { describe, expect, it } from 'vitest';
 import { readFileSync, readdirSync } from 'node:fs';
 import { fileURLToPath } from 'node:url';
-import { join } from 'node:path';
+import { dirname, join, relative, resolve } from 'node:path';
 import { SECURITY_PROFILE, validatePayloadSize } from '../../src/core/domain/security-profile.js';
 
 describe('domain security invariants', () => {
@@ -22,6 +22,8 @@ describe('domain security invariants', () => {
           const source = readFileSync(path, 'utf8');
           for (const match of source.matchAll(/from\s+['"]([^'"]+)['"]/g)) {
             expect(match[1]?.startsWith('.')).toBe(true);
+            const target = resolve(dirname(path), match[1] ?? '');
+            expect(relative(root, target).startsWith('..')).toBe(false);
           }
         }
       }

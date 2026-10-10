@@ -52,13 +52,17 @@ npm test
 
 # Secrets are generated at runtime, not committed to the repository.
 export API_KEY="$(openssl rand -hex 32)"
-export REDIS_PASSWORD="$(openssl rand -hex 32)"
-export MINIO_ROOT_USER="$(openssl rand -hex 16)"
-export MINIO_ROOT_PASSWORD="$(openssl rand -hex 32)"
-export MINIO_ACCESS_KEY="$MINIO_ROOT_USER"
-export MINIO_SECRET_KEY="$MINIO_ROOT_PASSWORD"
-docker compose config --quiet
-docker compose up --build -d
+export MINIO_ACCESS_KEY="$(openssl rand -hex 16)"
+export MINIO_SECRET_KEY="$(openssl rand -hex 32)"
+# Supply reviewed, patched images pinned by real digests (see deployment guide).
+export MINIO_IMAGE='YOUR_PATCHED_MINIO_IMAGE@sha256:YOUR_DIGEST'
+export MINIO_MC_IMAGE='YOUR_REVIEWED_MINIO_MC_IMAGE@sha256:YOUR_DIGEST'
+export DOCKER_GID="$(stat -c '%g' /var/run/docker.sock)"
+docker build --file docker/Dockerfile.sandbox-runner --tag sandbox-runner:local .
+docker compose -f deploy/compose.yaml -f deploy/compose.override.yaml \
+  --profile execution-host config --quiet
+docker compose -f deploy/compose.yaml -f deploy/compose.override.yaml \
+  --profile execution-host up --build -d
 ```
 
 Never commit `.env` files, print secrets in CI logs, or share the generated API
@@ -84,7 +88,7 @@ curl --fail-with-body \
 ```
 
 `202 Accepted` means queued, not safe. Poll until a terminal result:
-`CLEAN_READY` or `QUARANTINE_REJECTED`. See [API contract](docs/api.md) for
+`CLEAN_READY` or `QUARANTINE_REJECTED`. See [API contract](docs/API_SPEC.md) for
 validation and lifecycle details. Webhook delivery is reserved, not implemented.
 
 ## Security envelope
@@ -103,7 +107,7 @@ validation and lifecycle details. Webhook delivery is reserved, not implemented.
 
 Archives with traversal, symlinks or nested archives are rejected. Limits and
 signature checks do not establish file safety; parser vulnerabilities remain a
-threat. See [threat model and controls](docs/security.md).
+threat. See [threat model and controls](docs/THREAT_MODEL.md).
 
 ## Azure and supply chain
 
@@ -115,7 +119,8 @@ Redis availability/retirement and the missing ACA sandbox backend must be
 resolved before any production rollout.
 
 [Deployment guide](docs/deployment.md) covers compilation and `what-if`.
-[Security guide](docs/security.md) covers GitHub Advanced Security, required
+[Architecture](docs/ARCHITECTURE.md) explains processing and trust boundaries.
+[Security guide](docs/THREAT_MODEL.md) covers GitHub Advanced Security, required
 checks, Docker Scout, trust boundaries, and operational caveats. Repository
 settings and external services must be enabled by administrators; files alone do
 not enable those controls.

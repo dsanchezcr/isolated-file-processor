@@ -47,7 +47,7 @@ module redis './modules/redis.bicep' = {
     virtualNetworkId: network.outputs.virtualNetworkId
   }
 }
-module environment './modules/environment.bicep' = {
+module environment './modules/containerAppEnv.bicep' = {
   name: 'environment'
   params: {
     prefix: prefix
@@ -56,7 +56,7 @@ module environment './modules/environment.bicep' = {
     workspaceId: monitoring.outputs.workspaceId
   }
 }
-module apps './modules/apps.bicep' = {
+module apps './modules/containerApps.bicep' = {
   name: 'apps'
   params: {
     prefix: prefix

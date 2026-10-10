@@ -33,20 +33,39 @@ npm run build
 npm test
 
 export API_KEY="$(openssl rand -hex 32)"
-export REDIS_PASSWORD="$(openssl rand -hex 32)"
-export MINIO_ROOT_USER="$(openssl rand -hex 16)"
-export MINIO_ROOT_PASSWORD="$(openssl rand -hex 32)"
-export MINIO_ACCESS_KEY="$MINIO_ROOT_USER"
-export MINIO_SECRET_KEY="$MINIO_ROOT_PASSWORD"
-docker compose config --quiet
-docker compose up --build -d
-docker compose ps
+export MINIO_ACCESS_KEY="$(openssl rand -hex 16)"
+export MINIO_SECRET_KEY="$(openssl rand -hex 32)"
+export MINIO_IMAGE='YOUR_PATCHED_MINIO_IMAGE@sha256:YOUR_DIGEST'
+export MINIO_MC_IMAGE='YOUR_REVIEWED_MINIO_MC_IMAGE@sha256:YOUR_DIGEST'
+export DOCKER_GID="$(stat -c '%g' /var/run/docker.sock)"
+docker build --file docker/Dockerfile.sandbox-runner --tag sandbox-runner:local .
+docker compose -f deploy/compose.yaml -f deploy/compose.override.yaml \
+  --profile execution-host config --quiet
+docker compose -f deploy/compose.yaml -f deploy/compose.override.yaml \
+  --profile execution-host up --build -d
+docker compose -f deploy/compose.yaml -f deploy/compose.override.yaml \
+  --profile execution-host ps
 ```
 
 `MINIO_ACCESS_KEY`/`MINIO_SECRET_KEY` are the application's credentials;
-`MINIO_ROOT_USER`/`MINIO_ROOT_PASSWORD` configure the local MinIO server. These
+Compose maps the same values to MinIO's root-user/root-password settings. These
 development credentials intentionally match. Production must use narrowly scoped
 service credentials or Azure managed identity, never an administrator credential.
+
+The image placeholders must be replaced before these commands work. MinIO's
+older published images include known security advisories; build/review the
+patched `RELEASE.2025-10-15T17-29-55Z` source or newer and pin your approved image
+digest. Independently review and pin the `mc` initialization image; neither image
+is assumed available from a trusted project registry.
+
+The base Compose file intentionally does **not** enable processing or mount a
+Docker socket. The `execution-host` profile and explicit local override are an
+opt-in grant of host-root authority to the controller, even with a read-only
+socket mount. Use only on a dedicated disposable host. Linux socket group
+discovery above may need a host-specific adaptation on other Docker platforms.
+Gateway binds only to localhost; Redis, MinIO API and MinIO console publish no
+host ports. Local Redis is unauthenticated/plaintext on an internal development
+network; it is not the Azure TLS/authentication security model.
 
 Do not use `docker compose config` without `--quiet` in shared logs: interpolation
 can disclose secrets. Keep generated keys out of source control. Build the parser
@@ -59,8 +78,10 @@ curl --fail-with-body --oauth2-bearer "$API_KEY" \
   -F 'file=@./sample.pdf' http://localhost:3000/attachments
 curl --fail-with-body --oauth2-bearer "$API_KEY" \
   http://localhost:3000/attachments/FILE_ID
-docker compose logs --tail=100 gateway worker
-docker compose down
+docker compose -f deploy/compose.yaml -f deploy/compose.override.yaml \
+  --profile execution-host logs --tail=100 gateway worker
+docker compose -f deploy/compose.yaml -f deploy/compose.override.yaml \
+  --profile execution-host down
 ```
 
 Logs must not contain bearer keys, Redis credentials, original file content or
@@ -80,7 +101,7 @@ export IMAGE_TAG="$(git rev-parse --short HEAD)"
 docker login
 for target in gateway worker sandbox-runner; do
   image="docker.io/$DOCKERHUB_NAMESPACE/support-shield-$target:$IMAGE_TAG"
-  docker build --file docker/Dockerfile --target "$target" --tag "$image" .
+  docker build --file "docker/Dockerfile.$target" --tag "$image" .
   docker push "$image"
 done
 ```
@@ -113,8 +134,8 @@ hide registry credentials in an image reference.
 | `identities` | Distinct gateway and worker user-assigned managed identities |
 | `storage` | Private quarantine/clean containers; account-key access disabled; private endpoint; lifecycle; container-scoped RBAC |
 | `redis` | Premium Azure Cache for Redis; TLS 1.2+, port 6380 only; private endpoint; no public access; no eviction |
-| `environment` | VNet-integrated ACA workload-profile environment; Log Analytics |
-| `apps` | Authenticated gateway; opt-in nonfunctional worker/KEDA blueprint |
+| `containerAppEnv` | VNet-integrated ACA workload-profile environment; Log Analytics |
+| `containerApps` | Authenticated gateway; opt-in nonfunctional worker/KEDA blueprint |
 
 The adapter uses containers `quarantine-files` and `clean-files`.
 Gateway identity: **Storage Blob Data Contributor on quarantine only**.
