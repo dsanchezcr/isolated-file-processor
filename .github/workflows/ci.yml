@@ -1,0 +1,104 @@
+name: CI
+on:
+  pull_request:
+  push:
+    branches: [main]
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: ci-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  test:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 25
+    env:
+      RUN_DOCKER_TESTS: "1"
+      RUN_INTEGRATION_TESTS: "1"
+      SANDBOX_IMAGE: sandbox-runner:local
+      STORAGE_BACKEND: minio
+      REDIS_URL: redis://127.0.0.1:6379
+      MINIO_ENDPOINT: 127.0.0.1
+      MINIO_PORT: "9000"
+      MINIO_USE_SSL: "false"
+      QUARANTINE_BUCKET: quarantine
+      CLEAN_BUCKET: clean
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1 # v7.1.0
+        with:
+          node-version: "22"
+          cache: npm
+      - run: npm ci --ignore-scripts
+      - run: npm run typecheck && npm run build && npm run test:unit
+      - name: Validate infrastructure definitions
+        env:
+          MINIO_IMAGE: ${{ vars.MINIO_IMAGE }}
+          MINIO_MC_IMAGE: ${{ vars.MINIO_MC_IMAGE }}
+        run: |
+          export MINIO_ACCESS_KEY="$(openssl rand -hex 16)"
+          export MINIO_SECRET_KEY="$(openssl rand -hex 32)"
+          export API_KEY="$(openssl rand -hex 32)"
+          export DOCKER_GID="$(stat -c '%g' /var/run/docker.sock)"
+          docker compose -f deploy/compose.yaml -f deploy/compose.override.yaml --profile execution-host config --quiet
+          docker buildx bake -f docker/docker-bake.hcl --print >/dev/null
+      - name: Build real sandbox and distroless host images
+        run: |
+          docker build --target sandbox-runner -f docker/Dockerfile -t sandbox-runner:local .
+          docker build --target gateway -f docker/Dockerfile -t support-shield/gateway:local .
+          docker build --target worker -f docker/Dockerfile -t support-shield/worker:local .
+          docker run --rm --entrypoint /usr/local/bin/docker support-shield/worker:local --version
+          for image in gateway worker; do
+            docker run --rm --entrypoint /nodejs/bin/node "support-shield/$image:local" \
+              --input-type=module -e 'for (const name of ["sharp","pdf-lib","yauzl"]) { try { import.meta.resolve(name); process.exit(1); } catch (error) { if (error.code !== "ERR_MODULE_NOT_FOUND") throw error; } }'
+          done
+      - name: Start isolated CI integration infrastructure
+        env:
+          MINIO_IMAGE: ${{ vars.MINIO_IMAGE }}
+          MINIO_MC_IMAGE: ${{ vars.MINIO_MC_IMAGE }}
+        run: |
+          [[ "$MINIO_IMAGE" =~ @sha256:[a-f0-9]{64}$ ]]
+          [[ "$MINIO_MC_IMAGE" =~ @sha256:[a-f0-9]{64}$ ]]
+          access_key="$(openssl rand -hex 16)"
+          secret_key="$(openssl rand -hex 32)"
+          api_key="$(openssl rand -hex 32)"
+          echo "::add-mask::$access_key"
+          echo "::add-mask::$secret_key"
+          echo "::add-mask::$api_key"
+          printf 'MINIO_ACCESS_KEY=%s\nMINIO_SECRET_KEY=%s\nAPI_KEY=%s\n' "$access_key" "$secret_key" "$api_key" >> "$GITHUB_ENV"
+          export MINIO_ROOT_USER="$access_key" MINIO_ROOT_PASSWORD="$secret_key"
+          export MINIO_ACCESS_KEY="$access_key" MINIO_SECRET_KEY="$secret_key"
+          # Loopback-only on disposable CI runners, never a public service port.
+          docker run -d --name ci-redis -p 127.0.0.1:6379:6379 redis:7.4-alpine@sha256:858f009f9709ce576febc734aa78b8f6d624b82571f9ddb6bda4377c833b3499
+          docker run -d --name ci-minio -p 127.0.0.1:9000:9000 \
+            -e MINIO_ROOT_USER -e MINIO_ROOT_PASSWORD "$MINIO_IMAGE" server /data
+          docker run --rm --network host -e MINIO_ACCESS_KEY -e MINIO_SECRET_KEY \
+            --entrypoint /bin/sh "$MINIO_MC_IMAGE" -ec '
+              attempts=0
+              until mc alias set ci http://127.0.0.1:9000 "$MINIO_ACCESS_KEY" "$MINIO_SECRET_KEY"; do
+                attempts=$((attempts + 1)); test "$attempts" -lt 60; sleep 2
+              done
+              mc mb --ignore-existing ci/quarantine
+              mc mb --ignore-existing ci/clean
+              mc anonymous set none ci/quarantine
+              mc anonymous set none ci/clean
+            '
+          for attempt in $(seq 1 30); do
+            if docker exec ci-redis redis-cli ping | grep -q PONG; then break; fi
+            test "$attempt" -lt 30
+            sleep 1
+          done
+      - name: Real Redis/MinIO integration and Docker exploit regression tests
+        run: npm run test:integration && npm run test:exploits
+      - name: Cleanup dedicated CI resources
+        if: always()
+        run: |
+          docker rm -f ci-redis ci-minio 2>/dev/null || true
+          ids="$(docker ps -aq --filter label=supportshield.sandbox=true)"
+          if [ -n "$ids" ]; then docker rm -f $ids; fi

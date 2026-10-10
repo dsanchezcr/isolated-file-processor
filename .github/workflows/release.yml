@@ -1,0 +1,212 @@
+name: Release
+on:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: release
+  cancel-in-progress: false
+
+jobs:
+  verify:
+    # Release only protected main; configure required CI/CodeQL/dependency checks.
+    if: github.ref == 'refs/heads/main'
+    runs-on: ubuntu-24.04
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1 # v7.1.0
+        with:
+          node-version: "22"
+          cache: npm
+      - run: npm ci --ignore-scripts
+      - run: npm run typecheck && npm run build && npm run test:unit
+
+  publish:
+    needs: verify
+    runs-on: ubuntu-24.04
+    timeout-minutes: 45
+    environment: release
+    permissions:
+      contents: read
+      packages: write
+    outputs:
+      gateway: ${{ steps.digests.outputs.gateway }}
+      worker: ${{ steps.digests.outputs.worker }}
+      sandbox: ${{ steps.digests.outputs.sandbox }}
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - uses: docker/setup-qemu-action@99012661954931238ded8c8b007157a8430204e1 # v4.4.0
+        with:
+          platforms: arm64
+      - uses: docker/setup-buildx-action@f87e5991a6d7451dcb8d9637bfbc97413f497069 # v4.4.1
+      - uses: docker/login-action@dbcb813823bdd20940b903addbd779551569679f # v4.6.0
+        with:
+          registry: ghcr.io
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+      - uses: docker/login-action@dbcb813823bdd20940b903addbd779551569679f # v4.6.0
+        with:
+          username: ${{ vars.DOCKERHUB_NAMESPACE }}
+          password: ${{ secrets.DOCKERHUB_TOKEN }}
+      - name: Validate release configuration
+        env:
+          DOCKERHUB_NAMESPACE: ${{ vars.DOCKERHUB_NAMESPACE }}
+          SCOUT_ORGANIZATION: ${{ vars.SCOUT_ORGANIZATION }}
+        run: |
+          [[ "$DOCKERHUB_NAMESPACE" =~ ^[a-z0-9][a-z0-9_-]+$ ]]
+          test -n "$SCOUT_ORGANIZATION"
+          echo "REGISTRY=ghcr.io/${GITHUB_REPOSITORY,,}" >> "$GITHUB_ENV"
+          echo "SECONDARY_REGISTRY=docker.io/$DOCKERHUB_NAMESPACE" >> "$GITHUB_ENV"
+          echo "TAG=$GITHUB_SHA" >> "$GITHUB_ENV"
+      - uses: docker/bake-action@018cb6412ab401ebaa809aa5f85966b74628600f # v7.4.0
+        id: bake
+        with:
+          files: docker/docker-bake.hcl
+          push: true
+          provenance: mode=max
+          sbom: true
+      - name: Export immutable image references
+        id: digests
+        env:
+          BAKE_METADATA: ${{ steps.bake.outputs.metadata }}
+        run: |
+          for target in gateway worker sandbox-runner; do
+            digest="$(jq -er --arg target "$target" '.[$target]["containerimage.digest"]' <<< "$BAKE_METADATA")"
+            [[ "$digest" =~ ^sha256:[a-f0-9]{64}$ ]]
+            output="$target"
+            if [ "$target" = sandbox-runner ]; then output=sandbox; fi
+            printf '%s=%s/%s@%s\n' "$output" "$REGISTRY" "$target" "$digest" >> "$GITHUB_OUTPUT"
+          done
+
+  scout:
+    needs: publish
+    runs-on: ubuntu-24.04
+    timeout-minutes: 20
+    environment: release
+    strategy:
+      fail-fast: false
+      matrix:
+        target: [gateway, worker, sandbox]
+        platform: [linux/amd64, linux/arm64]
+    steps:
+      - uses: docker/login-action@dbcb813823bdd20940b903addbd779551569679f # v4.6.0
+        with:
+          registry: ghcr.io
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+      - name: Reject any fixable high or critical CVE
+        uses: docker/scout-action@bacf462e8d090c09660de30a6ccc718035f961e3 # v1.20.4
+        with:
+          command: cves
+          image: ${{ needs.publish.outputs[matrix.target] }}
+          platform: ${{ matrix.platform }}
+          dockerhub-user: ${{ vars.DOCKERHUB_NAMESPACE }}
+          dockerhub-password: ${{ secrets.DOCKERHUB_TOKEN }}
+          only-severities: critical,high
+          only-fixed: true
+          exit-code: true
+          write-comment: false
+      - name: Enforce configured Scout organization policies
+        uses: docker/scout-action@bacf462e8d090c09660de30a6ccc718035f961e3 # v1.20.4
+        with:
+          # Configure license, base-image and attestation policies in Scout SaaS.
+          # docker/scout-policy.json describes criteria, NOT a CLI policy input.
+          command: policy
+          image: ${{ needs.publish.outputs[matrix.target] }}
+          platform: ${{ matrix.platform }}
+          organization: ${{ vars.SCOUT_ORGANIZATION }}
+          dockerhub-user: ${{ vars.DOCKERHUB_NAMESPACE }}
+          dockerhub-password: ${{ secrets.DOCKERHUB_TOKEN }}
+          exit-code: true
+          write-comment: false
+
+  deploy-gateway:
+    needs: [publish, scout]
+    runs-on: ubuntu-24.04
+    timeout-minutes: 45
+    environment: production
+    permissions:
+      contents: read
+      id-token: write
+    env:
+      RESOURCE_GROUP: ${{ vars.AZURE_RESOURCE_GROUP }}
+      PREFIX: ${{ vars.AZURE_PREFIX }}
+      GATEWAY_IMAGE: ${{ needs.publish.outputs.gateway }}
+      WORKER_IMAGE: ${{ needs.publish.outputs.worker }}
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - uses: azure/login@053f7285eb20bf5469ef084617b0b24d3cec53fc # v3.1.0
+        with:
+          client-id: ${{ vars.AZURE_CLIENT_ID }}
+          tenant-id: ${{ vars.AZURE_TENANT_ID }}
+          subscription-id: ${{ vars.AZURE_SUBSCRIPTION_ID }}
+      - name: Validate immutable images and compile deployment
+        env:
+          PUBLIC_IMAGES_CONFIRMED: ${{ vars.PUBLIC_IMAGES_CONFIRMED }}
+        run: |
+          test "$PUBLIC_IMAGES_CONFIRMED" = true
+          test -n "$RESOURCE_GROUP"
+          [[ "$PREFIX" =~ ^[a-z][a-z0-9-]{2,17}$ ]]
+          [[ "$GATEWAY_IMAGE" =~ @sha256:[a-f0-9]{64}$ ]]
+          [[ "$WORKER_IMAGE" =~ @sha256:[a-f0-9]{64}$ ]]
+          az bicep install
+          az bicep lint --file deploy/bicep/main.bicep
+          az bicep build --file deploy/bicep/main.bicep --stdout >/dev/null
+      - name: ARM validation, what-if, and gateway-only deployment
+        env:
+          API_KEY: ${{ secrets.API_KEY }}
+        run: |
+          # Secure ARM parameter file is local to the runner and never uploaded.
+          trap 'rm -f docker/azure.parameters.json' EXIT
+          python - <<'PY'
+          import json, os
+          key = os.environ["API_KEY"]
+          if len(key) < 32:
+              raise SystemExit("API_KEY must contain at least 32 characters")
+          values = {
+              "prefix": os.environ["PREFIX"],
+              "gatewayImage": os.environ["GATEWAY_IMAGE"],
+              "workerImage": os.environ["WORKER_IMAGE"],
+              "apiKey": key,
+              "workerDeploymentEnabled": False,
+          }
+          path = "docker/azure.parameters.json"
+          fd = os.open(path, os.O_WRONLY | os.O_CREAT | os.O_EXCL, 0o600)
+          with os.fdopen(fd, "w") as output:
+              json.dump({"parameters": {name: {"value": value} for name, value in values.items()}}, output)
+          PY
+          az deployment group validate --resource-group "$RESOURCE_GROUP" \
+            --template-file deploy/bicep/main.bicep --parameters @docker/azure.parameters.json --output none
+          az deployment group what-if --resource-group "$RESOURCE_GROUP" \
+            --template-file deploy/bicep/main.bicep --parameters @docker/azure.parameters.json
+          az deployment group create --name "shield-${GITHUB_SHA:0:12}" \
+            --resource-group "$RESOURCE_GROUP" --template-file deploy/bicep/main.bicep \
+            --parameters @docker/azure.parameters.json --output none
+          echo "::warning::ACA worker is disabled. A separately secured Docker execution host is REQUIRED before uploads can complete."
+      - name: Verify gateway revision uses the approved immutable image
+        run: |
+          image="$(az containerapp show --resource-group "$RESOURCE_GROUP" --name "$PREFIX-gateway" \
+            --query 'properties.template.containers[0].image' --output tsv)"
+          test "$image" = "$GATEWAY_IMAGE"
+          revision="$(az containerapp show --resource-group "$RESOURCE_GROUP" --name "$PREFIX-gateway" \
+            --query properties.latestRevisionName --output tsv)"
+          test -n "$revision"
+          for attempt in $(seq 1 60); do
+            status="$(az containerapp revision show --resource-group "$RESOURCE_GROUP" \
+              --name "$PREFIX-gateway" --revision "$revision" --query properties.healthState --output tsv)"
+            if [ "$status" = Healthy ]; then break; fi
+            test "$attempt" -lt 60
+            sleep 10
+          done
+          revision_image="$(az containerapp revision show --resource-group "$RESOURCE_GROUP" \
+            --name "$PREFIX-gateway" --revision "$revision" --query 'properties.template.containers[0].image' --output tsv)"
+          test "$revision_image" = "$GATEWAY_IMAGE"

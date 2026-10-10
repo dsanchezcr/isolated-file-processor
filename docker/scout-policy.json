@@ -1,0 +1,24 @@
+{
+  "schemaVersion": 1,
+  "description": "Repository acceptance criteria, NOT a Docker Scout CLI input format.",
+  "vulnerabilities": {
+    "severities": ["critical", "high"],
+    "onlyFixable": true,
+    "maximum": 0
+  },
+  "licenses": {
+    "denied": ["AGPL-1.0-only", "AGPL-1.0-or-later", "AGPL-3.0-only", "AGPL-3.0-or-later"],
+    "reviewRequired": ["UNKNOWN", "NOASSERTION"],
+    "approvedRuntimeException": "GPL-2.0-or-later: poppler-utils in isolated sandbox only"
+  },
+  "baseImages": {
+    "immutableDigestRequired": true,
+    "approved": ["node:22-alpine", "gcr.io/distroless/nodejs22-debian12:nonroot", "docker:28.5.1-cli"]
+  },
+  "scoutSaasPolicies": [
+    "No fixable high or critical vulnerabilities",
+    "Approved licenses",
+    "Up-to-date base images",
+    "Supply chain attestations"
+  ]
+}

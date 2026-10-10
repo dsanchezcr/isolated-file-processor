@@ -1,0 +1,49 @@
+{
+  "name": "support-shield-processor",
+  "version": "1.0.0",
+  "description": "Zero-trust untrusted file ingestion. Isolates media parsers and attachments via ephemeral Docker Sandboxes, enforces shift-left supply chain security with Docker Scout and GitHub Advanced Security (CodeQL), and deploys event-driven workers to Azure Container Apps.",
+  "private": true,
+  "type": "module",
+  "engines": {
+    "node": ">=22.12.0"
+  },
+  "scripts": {
+    "build": "tsc -p tsconfig.json",
+    "typecheck": "tsc --noEmit -p tsconfig.json && tsc --noEmit -p tsconfig.test.json",
+    "test": "vitest run",
+    "test:unit": "vitest run tests/unit",
+    "test:integration": "vitest run tests/integration",
+    "test:exploits": "vitest run tests/exploits",
+    "start:gateway": "node dist/gateway/index.js",
+    "start:worker": "node dist/worker/index.js"
+  },
+  "repository": {
+    "type": "git",
+    "url": "https://github.com/dsanchezcr/isolated-file-processor"
+  },
+  "keywords": [],
+  "author": "",
+  "license": "MIT",
+  "dependencies": {
+    "@aws-sdk/client-s3": "3.1149.0",
+    "@aws-sdk/lib-storage": "3.1149.0",
+    "@azure/identity": "4.13.3",
+    "@azure/storage-blob": "12.34.0",
+    "@fastify/multipart": "10.1.3",
+    "@fastify/rate-limit": "11.2.1",
+    "@opentelemetry/api": "1.9.1",
+    "@opentelemetry/auto-instrumentations-node": "0.81.0",
+    "@opentelemetry/sdk-node": "0.223.0",
+    "bullmq": "6.3.12",
+    "fastify": "5.12.5",
+    "pdf-lib": "1.17.1",
+    "sharp": "0.35.5",
+    "yauzl": "3.4.0"
+  },
+  "devDependencies": {
+    "@types/node": "26.6.5",
+    "@types/yauzl": "3.4.0",
+    "typescript": "7.0.2",
+    "vitest": "5.0.3"
+  }
+}

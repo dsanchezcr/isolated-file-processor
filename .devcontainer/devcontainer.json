@@ -1,0 +1,15 @@
+{
+  "name": "SupportShield — no host Docker socket",
+  "build": {
+    "dockerfile": "Dockerfile",
+    "context": ".."
+  },
+  "remoteUser": "node",
+  "forwardPorts": [3000],
+  "postCreateCommand": "npm ci --ignore-scripts",
+  "customizations": {
+    "vscode": {
+      "extensions": ["dbaeumer.vscode-eslint", "ms-azuretools.vscode-docker"]
+    }
+  }
+}
