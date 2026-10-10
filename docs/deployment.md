@@ -52,16 +52,20 @@ Compose maps the same values to MinIO's root-user/root-password settings. These
 development credentials intentionally match. Production must use narrowly scoped
 service credentials or Azure managed identity, never an administrator credential.
 
-The image placeholders must be replaced before these commands work. MinIO's
-older published images include known security advisories; build/review the
-patched `RELEASE.2025-10-15T17-29-55Z` source or newer and pin your approved image
-digest. Independently review and pin the `mc` initialization image; neither image
-is assumed available from a trusted project registry.
+The image placeholders must be replaced before these commands work.
+`RELEASE.2025-10-15T17-29-55Z` fixes the specific 2025 advisory
+`GHSA-jjjj-jwhf-8rgr`, but subsequent review found additional vulnerabilities
+affecting that source and later upstream revisions with no verified patched
+version. **Do not treat an October source build as currently vulnerability-free.**
+`MINIO_IMAGE` must identify an operator-reviewed, maintained artifact with
+applicable fixes, pinned by digest. This project supplies no such verified
+fixture image; full Compose E2E is blocked until one is provisioned.
+Independently review and pin the `mc` initialization image.
 Set repository variables `MINIO_IMAGE` and `MINIO_MC_IMAGE` to the same reviewed
-immutable references for integration CI. The patched MinIO release requires
-container users to build from source; do not substitute an older official
-September image when an October image cannot be pulled. Registry/network
-unavailability is a validation limitation, not grounds to bypass the advisory.
+immutable references for integration CI. Do not automatically build vulnerable
+old official source or substitute an older published image merely to make tests
+run. Registry/network unavailability and unavailable patched fixtures are
+validation limitations, not grounds to bypass advisory findings.
 
 The base Compose file intentionally does **not** enable processing or mount a
 Docker socket. The `execution-host` profile and explicit local override are an
@@ -154,6 +158,14 @@ GitHub settings; workflow declarations alone do not establish approval policy.
 Configure Scout SaaS policies separately; the local policy JSON is a description,
 not automatic organization-policy activation.
 
+Enforce the requested MIT/Apache-2.0/BSD license allowlist in real Scout
+organization policy. Reference Poppler (GPL), libvips (LGPL), MinIO (AGPL) and
+base-OS licenses can block that gate; no runtime exception is pre-approved.
+Legal review and compatible component replacement or an explicitly authorized
+policy change are required. Fail closed on image promotion until configured
+Scout checks and required license approvals pass. A successful local build or
+vulnerability-only scan is not license compliance.
+
 The workflow publishes SHA-tagged images to
 `ghcr.io/OWNER/REPOSITORY/{gateway,worker,sandbox-runner}` and
 `docker.io/NAMESPACE/{gateway,worker,sandbox-runner}`; configure the protected ACR
@@ -170,6 +182,15 @@ does not provision a secured worker host or configure GitHub/Azure permissions.
 The release workflow publishes before Scout evaluates the artifacts. A pushed
 tag alone is not approved for deployment: consume digests only after all release
 checks pass, and implement a reviewed promotion/quarantine policy for registries.
+Image-size budgets must distinguish compressed registry artifacts from local
+uncompressed image sizes. Native validation reported approximately 291 MB for
+gateway and 334 MB for worker uncompressed; a pinned Node 22 base plus the required
+static Docker CLI already exceeds a 150 MB uncompressed worker budget before
+application dependencies. Native gzip Docker exports measured 78,838,194 bytes
+for gateway and 99,092,547 bytes for worker, each below 150 MB. Those are measured
+compressed export streams, not registry-layer totals or uncompressed image sizes.
+Measure each released platform and registry artifact independently; do not remove
+required runtime/security components to report a misleading size target.
 Set `acrName` to enable managed-identity pull from an existing same-resource-group
 ACR. The template assigns **AcrPull**, scoped to that registry, to each distinct
 gateway/worker UAMI and configures each ACA app's registry entry with its own

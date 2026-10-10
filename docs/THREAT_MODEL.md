@@ -99,6 +99,23 @@ provenance are useful only if verified during promotion. Never claim a workflow
 alone activates GHAS, branch protection, an Azure identity federation trust or
 Docker Hub permissions.
 
+## License policy and fail-closed promotion
+
+The requested MIT/Apache-2.0/BSD allowlist is a real gate, not a declaration that
+these reference images already satisfy it. Poppler is GPL, libvips is LGPL and
+MinIO is AGPL; inherited OS/runtime packages can introduce additional licenses.
+The reference parser and local object-store choices may therefore block the
+strict policy. There are **no approved runtime exceptions** in this documentation.
+An invented JSON approval must not bypass a required license gate.
+
+Obtain legal review and replace incompatible components, or have the authorized
+policy owner explicitly approve a policy change before using an exception. Until
+then, fail closed on promotion/deployment. Configure the actual Scout SaaS
+organization policy and verify every image/platform against it; source JSON,
+successful builds, clean vulnerability scans and SBOM presence are not license
+approval. Do not claim compliance before real configured Scout checks and
+required approvals pass.
+
 ## Operational acceptance checklist
 
 - Test parser rejection for malformed/truncated content, polyglots, zip bombs,

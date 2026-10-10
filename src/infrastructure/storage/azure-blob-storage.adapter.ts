@@ -15,7 +15,7 @@ export class AzureBlobStorageAdapter implements StoragePort {
   }
 
   async put(area: StorageArea, key: string, source: ByteStream, mime: string): Promise<void> {
-    await this.blob(area, key).uploadStream(Readable.from(source), 1024 * 1024, 2, {
+    await this.blob(area, key).uploadStream(Readable.from(source, { objectMode: false }), 1024 * 1024, 2, {
       blobHTTPHeaders: { blobContentType: mime },
     });
   }

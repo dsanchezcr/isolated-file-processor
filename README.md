@@ -43,9 +43,11 @@ proof that an output is harmless**.
 
 Prerequisites: Node.js 22+, Docker with Compose, `openssl`, and `curl`. Run Docker
 only on a disposable, dedicated development/execution machine.
-**Image preparation is required:** supply reviewed patched MinIO and `mc` images
+**Image preparation is required:** supply operator-reviewed, maintained patched MinIO and `mc` images
 by digest first. This is a setup recipe, not a runnable one-command fixture:
-older official MinIO images have a known advisory and are not a safe fallback.
+older official MinIO images/source have known advisories and are not a safe fallback.
+No verified patched MinIO fixture image is supplied; full Compose E2E remains
+blocked until one is provisioned.
 
 ```sh
 npm ci
@@ -129,3 +131,10 @@ resolved before any production rollout.
 checks, Docker Scout, trust boundaries, and operational caveats. Repository
 settings and external services must be enabled by administrators; files alone do
 not enable those controls.
+
+**License gate:** reference dependencies include Poppler (GPL), libvips (LGPL)
+and MinIO (AGPL), plus inherited base-OS licenses. These are not automatically
+compatible with a strict MIT/Apache-2.0/BSD allowlist. No exceptions are approved:
+legal review and compatible replacements or an explicitly authorized policy
+change are required. Image promotion must fail closed until real configured
+Scout checks and required license approvals pass.

@@ -28,7 +28,10 @@ export class MinioStorageAdapter implements StoragePort {
   async put(area: StorageArea, key: string, source: ByteStream, mime: string): Promise<void> {
     const upload = new Upload({
       client: this.client,
-      params: { Bucket: this.bucket(area), Key: key, Body: Readable.from(source), ContentType: mime },
+      params: {
+        Bucket: this.bucket(area), Key: key,
+        Body: Readable.from(source, { objectMode: false }), ContentType: mime,
+      },
       queueSize: 1,
       partSize: 5 * 1024 * 1024,
       leavePartsOnError: false,
