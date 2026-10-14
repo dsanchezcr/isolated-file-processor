@@ -103,7 +103,7 @@ jobs:
           username: ${{ github.actor }}
           password: ${{ secrets.GITHUB_TOKEN }}
       - name: Reject any fixable high or critical CVE
-        uses: docker/scout-action@bacf462e8d090c09660de30a6ccc718035f961e3 # v1.20.4
+        uses: docker/scout-action@221e7f4860634eeb1579e3bd7ca232e577bd1864 # v1.26.0
         with:
           command: cves
           image: ${{ needs.publish.outputs[matrix.target] }}
@@ -115,7 +115,7 @@ jobs:
           exit-code: true
           write-comment: false
       - name: Enforce configured Scout organization policies
-        uses: docker/scout-action@bacf462e8d090c09660de30a6ccc718035f961e3 # v1.20.4
+        uses: docker/scout-action@221e7f4860634eeb1579e3bd7ca232e577bd1864 # v1.26.0
         with:
           # Configure license, base-image and attestation policies in Scout SaaS.
           # docker/scout-policy.json describes criteria, NOT a CLI policy input.
