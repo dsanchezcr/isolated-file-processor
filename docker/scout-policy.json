@@ -1,0 +1,24 @@
+{
+  "schemaVersion": 1,
+  "description": "Repository acceptance criteria, NOT a Docker Scout CLI input format.",
+  "vulnerabilities": {
+    "severities": ["critical", "high"],
+    "onlyFixable": true,
+    "maximum": 0
+  },
+  "licenses": {
+    "allowed": ["MIT", "Apache-2.0", "BSD-2-Clause", "BSD-3-Clause", "BSD-4-Clause"],
+    "reviewRequired": ["UNKNOWN", "NOASSERTION"],
+    "exceptionsApproved": false
+  },
+  "baseImages": {
+    "immutableDigestRequired": true,
+    "approved": ["node:22-alpine", "gcr.io/distroless/nodejs22-debian12:nonroot", "docker:28.5.1-cli"]
+  },
+  "scoutSaasPolicies": [
+    "No fixable high or critical vulnerabilities",
+    "Approved licenses",
+    "Up-to-date base images",
+    "Supply chain attestations"
+  ]
+}

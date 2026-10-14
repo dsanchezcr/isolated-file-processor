@@ -1,0 +1,118 @@
+name: support-shield
+
+x-app-environment: &app-environment
+  NODE_ENV: production
+  STORAGE_BACKEND: minio
+  REDIS_URL: redis://redis:6379
+  MINIO_ENDPOINT: minio
+  MINIO_PORT: "9000"
+  MINIO_USE_SSL: "false"
+  MINIO_ACCESS_KEY: ${MINIO_ACCESS_KEY:?Set MINIO_ACCESS_KEY}
+  MINIO_SECRET_KEY: ${MINIO_SECRET_KEY:?Set MINIO_SECRET_KEY}
+
+x-app-security: &app-security
+  user: "65532:65532"
+  init: true
+  read_only: true
+  cap_drop: [ALL]
+  security_opt: [no-new-privileges:true]
+  pids_limit: 128
+  mem_limit: 512m
+  cpus: 1.0
+  restart: unless-stopped
+  tmpfs:
+    - /tmp:rw,noexec,nosuid,nodev,size=64m,uid=65532,gid=65532,mode=700
+
+services:
+  gateway:
+    <<: *app-security
+    image: ${GATEWAY_IMAGE:-support-shield/gateway:local}
+    build:
+      context: ..
+      dockerfile: docker/Dockerfile.gateway
+      target: gateway
+    environment:
+      <<: *app-environment
+      API_KEY: ${API_KEY:?Set API_KEY}
+      HOST: 0.0.0.0
+      PORT: "3000"
+    ports: ["127.0.0.1:${GATEWAY_PORT:-3000}:3000"]
+    networks: [backend, ingress]
+    depends_on:
+      redis: {condition: service_healthy}
+      minio-init: {condition: service_completed_successfully}
+    # Deliberately no Docker socket, host paths, or sandbox privileges.
+
+  worker:
+    <<: *app-security
+    image: ${WORKER_IMAGE:-support-shield/worker:local}
+    build:
+      context: ..
+      dockerfile: docker/Dockerfile.worker
+      target: worker
+    profiles: [execution-host]
+    environment:
+      <<: *app-environment
+      SANDBOX_IMAGE: ${SANDBOX_IMAGE:-sandbox-runner:local}
+      DOCKER_HOST: unix:///var/run/docker.sock
+    networks: [backend]
+    depends_on:
+      redis: {condition: service_healthy}
+      minio-init: {condition: service_completed_successfully}
+    # Configure a dedicated execution host. The local override grants host-root
+    # authority through its socket, despite UID/capability restrictions.
+
+  redis:
+    image: redis:7.4-alpine@sha256:858f009f9709ce576febc734aa78b8f6d624b82571f9ddb6bda4377c833b3499
+    command: [redis-server, --appendonly, "yes"]
+    networks: [backend]
+    volumes: [redis-data:/data]
+    healthcheck:
+      test: [CMD, redis-cli, ping]
+      interval: 5s
+      timeout: 3s
+      retries: 20
+    restart: unless-stopped
+    # No published Redis or object-storage ports.
+
+  minio:
+    # Supply an independently reviewed, patched MinIO distribution by digest.
+    # Upstream releases have unpatched advisories: no unsafe default or fallback.
+    image: ${MINIO_IMAGE:?Set a patched MinIO image by digest}
+    command: [server, /data, --console-address, ":9001"]
+    environment:
+      MINIO_ROOT_USER: ${MINIO_ACCESS_KEY:?Set MINIO_ACCESS_KEY}
+      MINIO_ROOT_PASSWORD: ${MINIO_SECRET_KEY:?Set MINIO_SECRET_KEY}
+    networks: [backend]
+    volumes: [minio-data:/data]
+    restart: unless-stopped
+
+  minio-init:
+    image: ${MINIO_MC_IMAGE:?Set a reviewed MinIO mc image by digest}
+    environment:
+      MINIO_ACCESS_KEY: ${MINIO_ACCESS_KEY:?Set MINIO_ACCESS_KEY}
+      MINIO_SECRET_KEY: ${MINIO_SECRET_KEY:?Set MINIO_SECRET_KEY}
+    networks: [backend]
+    depends_on: [minio]
+    entrypoint: [/bin/sh, -ec]
+    command:
+      - |
+        attempts=0
+        until mc alias set shield http://minio:9000 "$$MINIO_ACCESS_KEY" "$$MINIO_SECRET_KEY"; do
+          attempts=$$((attempts + 1))
+          test "$$attempts" -lt 60
+          sleep 2
+        done
+        mc mb --ignore-existing shield/quarantine-files
+        mc mb --ignore-existing shield/clean-files
+        mc anonymous set none shield/quarantine-files
+        mc anonymous set none shield/clean-files
+    restart: "no"
+
+networks:
+  backend: {internal: true}
+  ingress: {}
+
+volumes:
+  redis-data: {}
+  minio-data: {}

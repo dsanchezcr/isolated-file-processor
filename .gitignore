@@ -418,6 +418,17 @@ FodyWeavers.xsd
 *.vsix
 
 # Windows Installer files from build outputs
+# SupportShield generated output and local credentials
+node_modules/
+dist/
+coverage/
+docker/.e2e*
+.env
+.env.*
+!.env.example
+deploy/bicep/*.json
+deploy/bicep/modules/*.json
+
 *.cab
 *.msi
 *.msix

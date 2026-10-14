@@ -1,0 +1,32 @@
+# syntax=docker/dockerfile:1.7@sha256:a57df69d0ea827fb7266491f2813635de6f17269be881f696fbfdf2d83dda33e
+ARG NODE_IMAGE=node:22-alpine@sha256:0a7108bf6c7bf5de370ffb1a3ed6be93d405b43ff159f681a8d18c0e2bc2e402
+FROM ${NODE_IMAGE} AS build
+WORKDIR /build
+COPY package.json package-lock.json ./
+RUN npm ci --ignore-scripts
+COPY tsconfig.json ./
+COPY src ./src
+RUN npm run build
+
+FROM ${NODE_IMAGE} AS sandbox-dependencies
+WORKDIR /app
+COPY package.json package-lock.json ./
+# npm selects @img/sharp-linuxmusl-* for Alpine, never glibc artifacts.
+RUN npm ci --omit=dev --ignore-scripts \
+    && node --input-type=module -e 'import sharp from "sharp"; if (!sharp.versions.vips) process.exit(1)'
+
+FROM ${NODE_IMAGE} AS sandbox-runner
+RUN apk add --no-cache poppler-utils \
+    && addgroup -g 10001 sandbox \
+    && adduser -D -H -u 10001 -G sandbox sandbox \
+    && mkdir -p /sandbox/scratch \
+    && chown 10001:10001 /sandbox/scratch \
+    && chmod 700 /sandbox/scratch
+WORKDIR /app
+ENV NODE_ENV=production TMPDIR=/sandbox/scratch
+COPY --from=sandbox-dependencies --chown=65532:65532 /app/node_modules ./node_modules
+COPY --chown=65532:65532 package.json ./
+COPY --from=build --chown=65532:65532 /build/dist ./dist
+USER 10001:10001
+# MIME is the sole argument; payload arrives on bounded stdin, never a host bind.
+ENTRYPOINT ["node", "dist/worker/runner/sandbox-supervisor.js"]

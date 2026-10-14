@@ -1,0 +1,30 @@
+# syntax=docker/dockerfile:1.7@sha256:a57df69d0ea827fb7266491f2813635de6f17269be881f696fbfdf2d83dda33e
+ARG NODE_IMAGE=node:22-alpine@sha256:0a7108bf6c7bf5de370ffb1a3ed6be93d405b43ff159f681a8d18c0e2bc2e402
+ARG HOST_IMAGE=gcr.io/distroless/nodejs22-debian12:nonroot@sha256:13593b7570658e8477de39e2f4a1dd25db2f836d68a0ba771251572d23bb4f8e
+FROM ${NODE_IMAGE} AS build
+WORKDIR /build
+COPY package.json package-lock.json ./
+RUN npm ci --ignore-scripts
+COPY tsconfig.json ./
+COPY src ./src
+RUN npm run build
+
+FROM ${NODE_IMAGE} AS host-dependencies
+WORKDIR /app
+COPY package.json package-lock.json ./
+# Debian hosts must never load Alpine-built native parsers or optional accelerators.
+RUN npm ci --omit=dev --omit=optional --ignore-scripts \
+    && npm uninstall --omit=dev --omit=optional --ignore-scripts --no-save sharp pdf-lib yauzl \
+    && rm -rf node_modules/@img \
+    && test ! -d node_modules/sharp \
+    && test -z "$(find node_modules -name '*.node' -print -quit)"
+
+FROM ${HOST_IMAGE} AS gateway
+WORKDIR /app
+ENV NODE_ENV=production MSGPACKR_NATIVE_ACCELERATION_DISABLED=1
+COPY --from=host-dependencies --chown=65532:65532 /app/node_modules ./node_modules
+COPY --chown=65532:65532 package.json ./
+COPY --from=build --chown=65532:65532 /build/dist ./dist
+USER 65532:65532
+EXPOSE 3000
+ENTRYPOINT ["/nodejs/bin/node", "dist/gateway/index.js"]

@@ -1,0 +1,15 @@
+# LOCAL DEVELOPMENT ONLY. Run with both -f files and --profile execution-host.
+# Build/load sandbox-runner:local on the SAME daemon before starting the worker:
+# docker build --target sandbox-runner -f docker/Dockerfile.sandbox-runner -t sandbox-runner:local .
+# Export DOCKER_GID="$(stat -c '%g' /var/run/docker.sock)".
+# The socket confers host-root authority, even when mounted read-only. Do not use
+# this override on a shared host, public-facing gateway host, or Azure Container Apps.
+# Sandbox containers are created on the daemon host: use bounded stdin, no binds.
+services:
+  worker:
+    group_add: ["${DOCKER_GID:?Set the dedicated Docker socket group ID}"]
+    volumes:
+      - type: bind
+        source: /var/run/docker.sock
+        target: /var/run/docker.sock
+        read_only: true
