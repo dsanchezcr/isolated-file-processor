@@ -35,7 +35,7 @@
     "@opentelemetry/auto-instrumentations-node": "0.81.0",
     "@opentelemetry/sdk-node": "0.223.0",
     "bullmq": "6.3.12",
-    "fastify": "5.12.5",
+    "fastify": "5.12.7",
     "pdf-lib": "1.17.1",
     "sharp": "0.35.5",
     "yauzl": "3.4.0"
